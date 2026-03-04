@@ -231,9 +231,30 @@ export default function Dashboard() {
         const fetchInitialData = async () => {
             setIsLoading(true);
             try {
+                // Obtener sesión actual para aplicar filtros por rol a nivel de carga inicial
+                const { data: { session } } = await supabase.auth.getSession();
+                let userProfile = null;
+
+                if (session) {
+                    const { data } = await supabase.from('profiles').select('*').eq('id', session.user.id).single();
+                    userProfile = data;
+                }
+
                 // 1. Cargar Sedes
                 const { data: sedesData } = await supabase.from('sedes').select('*');
-                if (sedesData) setSedes(sedesData.map(s => ({ id: s.id, nombre: s.nombre, ubicacion: s.ubicacion, prefijo: s.prefijo })));
+                if (sedesData) {
+                    // FILTRO DE CAJERO: Solo cargar y permitir la sede a la que pertenece
+                    if (userProfile && userProfile.rol === 'CASHIER' && userProfile.sede_id) {
+                        const cajeroSede = sedesData.find(s => s.id === userProfile.sede_id);
+                        if (cajeroSede) {
+                            setSedes([{ id: cajeroSede.id, nombre: cajeroSede.nombre, ubicacion: cajeroSede.ubicacion, prefijo: cajeroSede.prefijo }]);
+                            setActiveSucursal(cajeroSede.nombre); // Forzar que esta sea la activa
+                        }
+                    } else {
+                        // Otros roles ven todas las sedes
+                        setSedes(sedesData.map(s => ({ id: s.id, nombre: s.nombre, ubicacion: s.ubicacion, prefijo: s.prefijo })));
+                    }
+                }
 
                 // 2. Cargar Perfiles de Usuario
                 const { data: profilesData } = await supabase.from('profiles').select('*');

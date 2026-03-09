@@ -12,7 +12,7 @@ import {
     TrendingUp, Activity, CheckCircle2, PackageSearch, Users,
     X, Check, DollarSign, Box, MapPin, Loader2,
     ShoppingCart, ArrowRightLeft, ClipboardList, Plus, Search, Filter, MoreVertical,
-    Printer, Trash2, ArrowUpRight, Sparkles, Send, MessageSquare, Bot, Cpu
+    Printer, Trash2, ArrowUpRight, Sparkles, Send, MessageSquare, Bot, Cpu, Smartphone, QrCode
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import Login from "./Login";
@@ -109,6 +109,7 @@ export default function Dashboard() {
     const [sedes, setSedes] = useState<Sede[]>([]);
     const [appUsers, setAppUsers] = useState<UserAccount[]>([]);
 
+    const [isMobileMode, setIsMobileMode] = useState(false);
     const [isConsumptionReportOpen, setIsConsumptionReportOpen] = useState(false);
     const [consumptionPeriod, setConsumptionPeriod] = useState<"WEEKLY" | "MONTHLY">("WEEKLY");
     const [isNewReqModalOpen, setIsNewReqModalOpen] = useState(false);
@@ -271,20 +272,25 @@ export default function Dashboard() {
                     .eq('fecha', selectedDate);
 
                 if (inventoryDataRaw) {
-                    const formatted = inventoryDataRaw.map(item => ({
-                        id: item.id,
-                        articulo: item.products.nombre,
-                        inicial: item.inicial,
-                        entradas: item.entradas,
-                        salidaVentas: item.salidas_ventas,
-                        teorico: (item.inicial + item.entradas - item.salidas_ventas),
-                        fisico: item.fisico,
-                        dif: item.fisico - (item.inicial + item.entradas - item.salidas_ventas),
-                        estado: (item.fisico - (item.inicial + item.entradas - item.salidas_ventas)) < 0 ? 'Fuga' : 'Ok',
-                        costo: item.costo_en_fecha,
-                        reportarPlanCero: item.reportar_plan_cero,
-                        sucursal: sedesData?.find(s => s.id === item.sede_id)?.nombre || 'Principal'
-                    }));
+                    const formatted = inventoryDataRaw.map(item => {
+                        const mermas = Number(item.mermas) || 0;
+                        const teorico = (item.inicial + item.entradas - item.salidas_ventas - mermas);
+                        return {
+                            id: item.id,
+                            articulo: item.products.nombre,
+                            inicial: item.inicial,
+                            entradas: item.entradas,
+                            salidaVentas: item.salidas_ventas,
+                            mermas: mermas,
+                            teorico: teorico,
+                            fisico: item.fisico,
+                            dif: item.fisico - teorico,
+                            estado: (item.fisico - teorico) < 0 ? 'Fuga' : 'Ok',
+                            costo: item.costo_en_fecha,
+                            reportarPlanCero: item.reportar_plan_cero,
+                            sucursal: sedesData?.find(s => s.id === item.sede_id)?.nombre || 'Principal'
+                        };
+                    });
                     setInventoryData(formatted);
                 }
 
@@ -329,6 +335,7 @@ export default function Dashboard() {
 
     // Funciones de KPIs Reales basadas en el estado actual (usando datos filtrados por sucursal)
     const totalFugas = filteredData.filter(d => d.dif < 0).reduce((acc, curr) => acc + (Math.abs(curr.dif) * curr.costo), 0);
+    const totalMermas = filteredData.reduce((acc, curr) => acc + (curr.mermas * curr.costo), 0);
     const totalAhorros = filteredData.filter(d => d.dif > 0).reduce((acc, curr) => acc + (curr.dif * curr.costo), 0);
     const totalSalidas = filteredData.reduce((acc, curr) => acc + curr.salidaVentas, 0);
     const totalFugasUnd = filteredData.filter(d => d.dif < 0).reduce((acc, curr) => acc + Math.abs(curr.dif), 0);
@@ -460,12 +467,29 @@ export default function Dashboard() {
         }));
     };
 
+    const updateMermas = (id: string | number, newValue: string) => {
+        setInventoryData(prev => prev.map(item => {
+            if (item.id === id) {
+                let mermasNum = 0;
+                if (newValue !== "") {
+                    mermasNum = Number(newValue);
+                }
+                const newTeorico = (item.inicial + item.entradas - item.salidaVentas - mermasNum);
+                const newDif = (Number(item.fisico) || 0) - newTeorico;
+                const newEstado = newDif < 0 ? "Fuga" : newDif > 0 ? "Ahorro" : "Ok";
+                return { ...item, mermas: newValue === "" ? "" : mermasNum, teorico: newTeorico, dif: newDif, estado: newEstado };
+            }
+            return item;
+        }));
+    };
+
     const savePhysicalCounts = async () => {
         setIsLoading(true);
         try {
             const updates = inventoryData.map(item => ({
                 id: item.id, // Esto asume que el ID es el UUID de Supabase si se cargó de ahí
                 fisico: Number(item.fisico) || 0,
+                mermas: Number(item.mermas) || 0,
                 reportar_plan_cero: item.reportarPlanCero
             })).filter(u => typeof u.id === 'string' && u.id.includes('-')); // Filtro básico para IDs de Supabase vs Mock/Excel temporal
 
@@ -480,6 +504,54 @@ export default function Dashboard() {
             alert("Error al guardar el conteo. Verifica la conexión.");
         } finally {
             setIsLoading(false);
+        }
+    };
+
+    const sendTelegramReport = async () => {
+        const TOKEN = "8274811663:AAEu7jRXnazkep4msLzfSungFPeHejVTJwo";
+        const CHAT_ID = "6015561320";
+
+        const fechaStr = new Date(selectedDate).toLocaleDateString('es-CO', { day: '2-digit', month: 'long' });
+
+        let message = `📊 *REPORTE KARDEX ANALYTICS*\n`;
+        message += `📍 *Sede:* ${activeSucursal}\n`;
+        message += `📅 *Fecha:* ${fechaStr}\n\n`;
+
+        message += `💰 *FINANCIERO:*\n`;
+        message += `• Consumo: $${totalSalidas.toLocaleString('es-CO')}\n`;
+        message += `• Mermas: $${totalMermas.toLocaleString('es-CO')}\n`;
+        message += `• Fugas: -$${totalFugas.toLocaleString('es-CO')}\n\n`;
+
+        const criticos = filteredData.filter(d => d.dif < 0).sort((a, b) => a.dif - b.dif).slice(0, 3);
+        if (criticos.length > 0) {
+            message += `⚠️ *TOP FUGAS DETECTADAS:*\n`;
+            criticos.forEach(p => {
+                message += `• ${p.articulo}: ${p.dif} und (-$${(Math.abs(p.dif) * p.costo).toLocaleString('es-CO')})\n`;
+            });
+            message += `\n`;
+        }
+
+        message += `✅ *Reporte generado automáticamente.*`;
+
+        try {
+            const response = await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    chat_id: CHAT_ID,
+                    text: message,
+                    parse_mode: 'Markdown'
+                })
+            });
+
+            if (response.ok) {
+                alert("Reporte enviado a Telegram exitosamente.");
+            } else {
+                throw new Error("Error en respuesta de Telegram");
+            }
+        } catch (error) {
+            console.error("Error Telegram:", error);
+            alert("No se pudo enviar el reporte a Telegram.");
         }
     };
 
@@ -500,23 +572,23 @@ export default function Dashboard() {
 
     if (isLoading) {
         return (
-            <div className="min-h-screen bg-[#05080F] flex items-center justify-center">
-                <Loader2 className="size-10 text-cyan-500 animate-spin" />
+            <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+                <Loader2 className="size-10 text-cyan-600 animate-spin" />
             </div>
         );
     }
 
     return (
-        <div id="dashboard-root" className="min-h-screen bg-[#06080A] text-slate-300 font-sans selection:bg-cyan-900 selection:text-white relative flex">
+        <div id="dashboard-root" className="min-h-screen bg-slate-50 text-slate-700 font-sans selection:bg-cyan-500 selection:text-white relative flex">
 
             {/* Sidebar de Navegación */}
-            <aside className="w-64 bg-[#0A0D14] border-r border-white/5 flex flex-col sticky top-0 h-screen hidden lg:flex">
+            <aside className="w-64 bg-white border-r border-slate-200 flex flex-col sticky top-0 h-screen hidden lg:flex">
                 <div className="p-6">
                     <div className="flex items-center gap-3 mb-8">
-                        <div className="size-8 rounded-lg bg-gradient-to-br from-cyan-400 to-emerald-400 flex items-center justify-center text-slate-950">
+                        <div className="size-8 rounded-lg bg-gradient-to-br from-cyan-500 to-emerald-500 flex items-center justify-center text-white shadow-md">
                             <Activity size={20} strokeWidth={2.5} />
                         </div>
-                        <h1 className="text-xl font-bold text-white tracking-tight leading-none">Kardex <span className="text-cyan-400 font-light">Analytics</span></h1>
+                        <h1 className="text-xl font-bold text-slate-900 tracking-tight leading-none">Kardex <span className="text-cyan-600 font-black">Analytics</span></h1>
                     </div>
 
                     <nav className="space-y-1">
@@ -524,7 +596,7 @@ export default function Dashboard() {
                             onClick={() => setView("DASHBOARD")}
                             className={cn(
                                 "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
-                                view === "DASHBOARD" ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 shadow-[0_0_15px_rgba(34,211,238,0.1)]" : "text-slate-400 hover:text-white hover:bg-white/5"
+                                view === "DASHBOARD" ? "bg-cyan-50 text-cyan-700 border border-cyan-200 shadow-sm" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
                             )}
                         >
                             <Box size={18} /> Dashboard General
@@ -533,7 +605,7 @@ export default function Dashboard() {
                             onClick={() => setView("REQUISITIONS")}
                             className={cn(
                                 "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
-                                view === "REQUISITIONS" ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 shadow-[0_0_15px_rgba(34,211,238,0.1)]" : "text-slate-400 hover:text-white hover:bg-white/5"
+                                view === "REQUISITIONS" ? "bg-cyan-50 text-cyan-700 border border-cyan-200 shadow-sm" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
                             )}
                         >
                             <ShoppingCart size={18} /> Requisiciones
@@ -542,7 +614,7 @@ export default function Dashboard() {
                             onClick={() => setView("TRANSFERS")}
                             className={cn(
                                 "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
-                                view === "TRANSFERS" ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 shadow-[0_0_15px_rgba(34,211,238,0.1)]" : "text-slate-400 hover:text-white hover:bg-white/5"
+                                view === "TRANSFERS" ? "bg-cyan-50 text-cyan-700 border border-cyan-200 shadow-sm" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
                             )}
                         >
                             <ArrowRightLeft size={18} /> Traslados
@@ -552,7 +624,7 @@ export default function Dashboard() {
                                 onClick={() => setView("CONSUMPTION")}
                                 className={cn(
                                     "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
-                                    view === "CONSUMPTION" ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 shadow-[0_0_15px_rgba(34,211,238,0.1)]" : "text-slate-400 hover:text-white hover:bg-white/5"
+                                    view === "CONSUMPTION" ? "bg-cyan-50 text-cyan-700 border border-cyan-200 shadow-sm" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
                                 )}
                             >
                                 <TrendingUp size={18} /> Análisis de Consumo
@@ -563,20 +635,20 @@ export default function Dashboard() {
                                 onClick={() => setView("CATALOG")}
                                 className={cn(
                                     "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
-                                    view === "CATALOG" ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 shadow-[0_0_15px_rgba(34,211,238,0.1)]" : "text-slate-400 hover:text-white hover:bg-white/5"
+                                    view === "CATALOG" ? "bg-cyan-50 text-cyan-700 border border-cyan-200 shadow-sm" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
                                 )}
                             >
                                 <ClipboardList size={18} /> Catálogo Maestro
                             </button>
                         )}
                         {role === "ADMIN" && (
-                            <div className="pt-4 mt-4 border-t border-white/5 space-y-1">
-                                <p className="px-4 text-[10px] font-black text-slate-600 uppercase tracking-widest mb-2">Configuración</p>
+                            <div className="pt-4 mt-4 border-t border-slate-100 space-y-1">
+                                <p className="px-4 text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Configuración</p>
                                 <button
                                     onClick={() => setView("SEDES")}
                                     className={cn(
                                         "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
-                                        view === "SEDES" ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : "text-slate-400 hover:text-white hover:bg-white/5"
+                                        view === "SEDES" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
                                     )}
                                 >
                                     <MapPin size={18} /> Gestión de Sedes
@@ -585,7 +657,7 @@ export default function Dashboard() {
                                     onClick={() => setView("USERS")}
                                     className={cn(
                                         "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
-                                        view === "USERS" ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : "text-slate-400 hover:text-white hover:bg-white/5"
+                                        view === "USERS" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
                                     )}
                                 >
                                     <Users size={18} /> Gestión de Usuarios
@@ -596,21 +668,21 @@ export default function Dashboard() {
                 </div>
 
                 <div className="mt-auto p-6 space-y-4">
-                    <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-4 rounded-2xl border border-white/5">
+                    <div className="bg-slate-100 p-4 rounded-2xl border border-slate-200">
                         <p className="text-xs text-slate-500 font-bold uppercase tracking-wider mb-2">Usuario Activo</p>
                         <div className="flex items-center gap-3">
-                            <div className="size-10 rounded-full bg-cyan-500/20 border border-cyan-500/30 flex items-center justify-center text-cyan-400 font-bold uppercase">
+                            <div className="size-10 rounded-full bg-cyan-100 border border-cyan-200 flex items-center justify-center text-cyan-700 font-bold uppercase">
                                 {sessionUser?.profile?.nombre?.[0] || 'U'}
                             </div>
                             <div>
-                                <p className="text-sm font-bold text-white leading-none capitalize truncate max-w-[120px]">{sessionUser?.profile?.nombre || 'Usuario'}</p>
-                                <p className="text-[10px] text-slate-500 mt-1">{role}</p>
+                                <p className="text-sm font-bold text-slate-800 leading-none capitalize truncate max-w-[120px]">{sessionUser?.profile?.nombre || 'Usuario'}</p>
+                                <p className="text-[10px] text-slate-500 mt-1 font-semibold">{role}</p>
                             </div>
                         </div>
                     </div>
                     <button
                         onClick={handleLogout}
-                        className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-bold text-rose-400 hover:bg-rose-500/10 transition-all border border-transparent hover:border-rose-500/20"
+                        className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-bold text-rose-600 hover:bg-rose-50 transition-all border border-transparent hover:border-rose-200"
                     >
                         <LogOut size={18} /> Cerrar Sesión
                     </button>
@@ -620,21 +692,21 @@ export default function Dashboard() {
 
             <div className="flex-1 flex flex-col min-w-0">
                 {/* Header Premium / Nav */}
-                <header className="sticky top-0 z-50 bg-[#0A0D14]/80 backdrop-blur-md border-b border-white/5 px-6 py-4 flex items-center justify-between">
+                <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-200 px-6 py-4 flex items-center justify-between">
                     <div className="flex items-center gap-4">
-                        <h2 className="text-lg font-bold text-white capitalize">
+                        <h2 className="text-lg font-bold text-slate-900 capitalize">
                             {view.toLowerCase()} <span className="text-slate-500 text-sm font-normal">| {activeSucursal}</span>
                         </h2>
                     </div>
 
                     <div className="flex items-center gap-4">
                         {/* Selector de Fecha (Cargue Diario) */}
-                        <div className="flex items-center gap-2 bg-[#111622] px-4 py-1.5 rounded-full border border-cyan-500/20 shadow-[0_0_15px_rgba(34,211,238,0.05)]">
-                            <Activity size={14} className="text-cyan-400 animate-pulse" />
+                        <div className="flex items-center gap-2 bg-white px-4 py-1.5 rounded-full border border-slate-200 shadow-sm">
+                            <Activity size={14} className="text-cyan-600 animate-pulse" />
                             <span className="text-[10px] font-black text-slate-500 uppercase tracking-tighter mr-2">Cargue Diario</span>
                             <input
                                 type="date"
-                                className="bg-transparent text-sm text-white font-bold focus:outline-none border-none cursor-pointer [color-scheme:dark]"
+                                className="bg-transparent text-sm text-slate-700 font-bold focus:outline-none border-none cursor-pointer"
                                 value={selectedDate}
                                 onChange={(e) => setSelectedDate(e.target.value)}
                             />
@@ -643,34 +715,34 @@ export default function Dashboard() {
                         {/* Filtro de Sucursal */}
                         {sucursalesDisponibles.length > 0 && (
                             <div className={cn(
-                                "flex items-center gap-2 bg-[#111622] px-3 py-1.5 rounded-full border border-white/5 shadow-inner",
+                                "flex items-center gap-2 bg-white px-3 py-1.5 rounded-full border border-slate-200 shadow-sm",
                                 role === "CASHIER" && "opacity-60 grayscale"
                             )}>
-                                <MapPin size={16} className="text-cyan-500" />
+                                <MapPin size={16} className="text-cyan-600" />
                                 <select
                                     className={cn(
-                                        "bg-transparent text-sm text-slate-300 font-medium focus:outline-none focus:ring-0 border-none appearance-none cursor-pointer pr-4",
+                                        "bg-transparent text-sm text-slate-700 font-medium focus:outline-none focus:ring-0 border-none appearance-none cursor-pointer pr-4",
                                         role === "CASHIER" && "pointer-events-none"
                                     )}
                                     value={activeSucursal}
                                     onChange={(e) => setActiveSucursal(e.target.value)}
                                     disabled={role === "CASHIER"}
                                 >
-                                    {role !== "CASHIER" && <option value="Todas" className="bg-slate-900">Todas las Sucursales</option>}
+                                    {role !== "CASHIER" && <option value="Todas" className="bg-white">Todas las Sucursales</option>}
                                     {sucursalesDisponibles.map(sucursal => (
-                                        <option key={sucursal} value={sucursal} className="bg-slate-900">{sucursal}</option>
+                                        <option key={sucursal} value={sucursal} className="bg-white">{sucursal}</option>
                                     ))}
                                 </select>
                             </div>
                         )}
 
                         {/* Perfil de Usuario Actual */}
-                        <div className="flex items-center gap-3 pl-4 border-l border-white/5">
+                        <div className="flex items-center gap-3 pl-4 border-l border-slate-200">
                             <div className="text-right hidden sm:block">
-                                <p className="text-xs font-black text-white uppercase tracking-tight">{sessionUser?.profile?.nombre || 'Iniciado'}</p>
-                                <p className="text-[9px] font-bold text-cyan-500 uppercase">{role}</p>
+                                <p className="text-xs font-black text-slate-800 uppercase tracking-tight">{sessionUser?.profile?.nombre || 'Iniciado'}</p>
+                                <p className="text-[9px] font-bold text-cyan-600 uppercase">{role}</p>
                             </div>
-                            <div className="size-10 rounded-2xl bg-gradient-to-tr from-cyan-600 to-blue-600 flex items-center justify-center text-white font-black shadow-lg shadow-cyan-500/10">
+                            <div className="size-10 rounded-2xl bg-gradient-to-tr from-cyan-500 to-blue-500 flex items-center justify-center text-white font-black shadow-md shadow-cyan-500/20">
                                 {sessionUser?.profile?.nombre?.[0] || 'U'}
                             </div>
                         </div>
@@ -689,15 +761,15 @@ export default function Dashboard() {
                                     onClick={() => fileInputRef.current?.click()}
                                     className={cn(
                                         "relative h-48 rounded-3xl border-2 border-dashed transition-all duration-300 flex flex-col items-center justify-center gap-4 cursor-pointer group overflow-hidden",
-                                        fileHover ? "border-cyan-400 bg-cyan-400/5 shadow-[0_0_30px_rgba(34,211,238,0.1)]" : "border-white/10 hover:border-white/20 bg-white/5"
+                                        fileHover ? "border-cyan-400 bg-cyan-50 shadow-[0_0_30px_rgba(34,211,238,0.1)]" : "border-slate-300 hover:border-cyan-300 bg-white"
                                     )}
                                 >
                                     <input type="file" ref={fileInputRef} className="hidden" accept=".xlsx,.xls" onChange={(e) => e.target.files?.[0] && processExcelFile(e.target.files[0])} />
-                                    <div className="p-4 rounded-2xl bg-[#0F172A] border border-white/5 group-hover:scale-110 transition-transform shadow-xl">
+                                    <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 group-hover:scale-110 transition-transform shadow-sm">
                                         <Upload className={cn("size-8 transition-colors", fileHover ? "text-cyan-400" : "text-slate-400")} />
                                     </div>
                                     <div className="text-center">
-                                        <p className="text-lg font-bold text-white">Haz click o Arrastra tu Kardex Excel aquí</p>
+                                        <p className="text-lg font-bold text-slate-800">Haz click o Arrastra tu Kardex Excel aquí</p>
                                         <p className="text-sm text-slate-500">Gamasoft Export compatible (.xlsx)</p>
                                     </div>
                                 </div>
@@ -723,47 +795,55 @@ export default function Dashboard() {
                             {/* Dashboards Visuales */}
                             {!isSimpleView && (
                                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                                    <div className="bg-[#0A0D14]/80 backdrop-blur-md rounded-2xl p-6 border border-white/5 shadow-xl">
-                                        <h3 className="text-slate-100 font-semibold mb-6 flex items-center gap-2">
-                                            <ClipboardList size={18} className="text-cyan-400" /> Relación Ventas vs Stock
+                                    <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm">
+                                        <h3 className="text-slate-800 font-bold mb-6 flex items-center gap-2">
+                                            <ClipboardList size={18} className="text-cyan-600" /> Relación Ventas vs Stock
                                         </h3>
-                                        <div className="h-64 w-full">
-                                            <ResponsiveContainer width="100%" height="100%">
-                                                <AreaChart data={mockTrendData}>
-                                                    <defs>
-                                                        <linearGradient id="colorSalidas" x1="0" y1="0" x2="0" y2="1">
-                                                            <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
-                                                            <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
-                                                        </linearGradient>
-                                                        <linearGradient id="colorStock" x1="0" y1="0" x2="0" y2="1">
-                                                            <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.3} />
-                                                            <stop offset="95%" stopColor="#06b6d4" stopOpacity={0} />
-                                                        </linearGradient>
-                                                    </defs>
-                                                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                                                    <XAxis dataKey="name" stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
-                                                    <YAxis hide />
-                                                    <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
-                                                    <Area type="monotone" dataKey="stock" stroke="#06b6d4" fillOpacity={1} fill="url(#colorStock)" strokeWidth={3} name="Stock Disponible" />
-                                                    <Area type="monotone" dataKey="salidas" stroke="#10b981" fillOpacity={1} fill="url(#colorSalidas)" strokeWidth={3} name="Unidades Vendidas" />
-                                                </AreaChart>
-                                            </ResponsiveContainer>
+                                        <div className="h-64 w-full flex items-center justify-center">
+                                            {inventoryData.length > 0 ? (
+                                                <ResponsiveContainer width="100%" height="100%">
+                                                    <AreaChart data={mockTrendData}>
+                                                        <defs>
+                                                            <linearGradient id="colorSalidas" x1="0" y1="0" x2="0" y2="1">
+                                                                <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
+                                                                <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                                                            </linearGradient>
+                                                            <linearGradient id="colorStock" x1="0" y1="0" x2="0" y2="1">
+                                                                <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.3} />
+                                                                <stop offset="95%" stopColor="#06b6d4" stopOpacity={0} />
+                                                            </linearGradient>
+                                                        </defs>
+                                                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                                                        <XAxis dataKey="name" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
+                                                        <YAxis hide />
+                                                        <Tooltip contentStyle={{ backgroundColor: '#ffffff', borderColor: '#e2e8f0', borderRadius: '12px', color: '#0f172a' }} />
+                                                        <Area type="monotone" dataKey="stock" stroke="#06b6d4" fillOpacity={1} fill="url(#colorStock)" strokeWidth={3} name="Stock Disponible" />
+                                                        <Area type="monotone" dataKey="salidas" stroke="#10b981" fillOpacity={1} fill="url(#colorSalidas)" strokeWidth={3} name="Unidades Vendidas" />
+                                                    </AreaChart>
+                                                </ResponsiveContainer>
+                                            ) : (
+                                                <div className="text-center">
+                                                    <Activity className="size-10 text-slate-200 mx-auto mb-2" />
+                                                    <p className="text-slate-400 text-xs font-medium">No hay datos históricos para graficar.</p>
+                                                    <p className="text-[10px] text-slate-300 mt-1 uppercase font-black uppercase tracking-widest">Sincroniza tu Kardex primero</p>
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
 
-                                    <div className="bg-[#0A0D14]/80 backdrop-blur-md rounded-2xl p-6 border border-white/5 shadow-xl">
-                                        <h3 className="text-slate-100 font-semibold mb-6 flex items-center gap-2">
-                                            <TrendingDown size={18} className="text-emerald-400" /> Comparativo Físico/Bodega vs Teórico/Sistema
+                                    <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm">
+                                        <h3 className="text-slate-800 font-bold mb-6 flex items-center gap-2">
+                                            <TrendingDown size={18} className="text-emerald-600" /> Comparativo Físico/Bodega vs Teórico/Sistema
                                         </h3>
                                         <div className="h-64 w-full">
                                             <ResponsiveContainer width="100%" height="100%">
                                                 <BarChart data={filteredData.slice(0, 10)} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
-                                                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                                                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
                                                     <XAxis dataKey="articulo" tick={false} axisLine={false} />
                                                     <YAxis stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
                                                     <Tooltip
-                                                        cursor={{ fill: '#1e293b' }}
-                                                        contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', borderRadius: '12px' }}
+                                                        cursor={{ fill: '#f1f5f9' }}
+                                                        contentStyle={{ backgroundColor: '#ffffff', borderColor: '#e2e8f0', borderRadius: '12px', color: '#0f172a' }}
                                                     />
                                                     <Bar dataKey="teorico" fill="#0ea5e9" radius={[4, 4, 0, 0]} name="Inv. Teórico (Sistema)" />
                                                     <Bar dataKey="fisico" fill="#10b981" radius={[4, 4, 0, 0]} name="Inv. Físico (Bodega)" />
@@ -776,87 +856,116 @@ export default function Dashboard() {
 
                             {/* Tabla de Resultados Inteligente y Evaluable */}
                             {!isSimpleView && (
-                                <div className="bg-[#0A0D14]/80 backdrop-blur-md border border-white/5 rounded-2xl shadow-2xl overflow-hidden mt-4">
-                                    <div className="p-5 border-b border-white/5 flex flex-col md:flex-row gap-4 justify-between items-start md:items-center">
+                                <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden mt-4">
+                                    <div className="p-5 border-b border-slate-200 flex flex-col md:flex-row gap-4 justify-between items-start md:items-center">
                                         <div>
-                                            <h3 className="text-slate-100 font-semibold flex items-center gap-2">
-                                                <PackageSearch size={18} className="text-slate-400" />
+                                            <h3 className="text-slate-800 font-bold flex items-center gap-2">
+                                                <PackageSearch size={18} className="text-slate-500" />
                                                 Matriz de Control y Cuadre de Inventario
                                             </h3>
                                             <p className="text-xs text-slate-500 mt-1">Edita el valor de la columna <b>"Físico Real"</b> para calcular automáticamente las fugas/ahorros</p>
                                         </div>
 
                                         <div className="flex gap-2">
+                                            {/* 
+                                            <button
+                                                onClick={sendTelegramReport}
+                                                disabled={inventoryData.length === 0}
+                                                className="px-4 py-2 bg-slate-900 text-white rounded-lg text-sm font-black transition-all shadow-md flex items-center gap-2 border border-slate-800 hover:bg-slate-800"
+                                            >
+                                                <Send size={16} className="text-cyan-400" /> REPORTE TELEGRAM
+                                            </button>
+                                            */}
+                                            <button
+                                                onClick={() => setIsMobileMode(!isMobileMode)}
+                                                className={cn(
+                                                    "px-4 py-2 rounded-lg text-sm font-black transition-all shadow-md flex items-center gap-2 border",
+                                                    isMobileMode ? "bg-cyan-600 text-white border-cyan-500" : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                                                )}
+                                            >
+                                                {isMobileMode ? <ClipboardList size={16} /> : <Smartphone size={16} />}
+                                                {isMobileMode ? "MODO TABLA" : "MODO MOVIL"}
+                                            </button>
                                             <button
                                                 onClick={savePhysicalCounts}
                                                 disabled={inventoryData.length === 0}
-                                                className="disabled:opacity-50 bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-4 py-2 rounded-lg text-sm font-black transition-all shadow-lg flex items-center gap-2"
+                                                className="disabled:opacity-50 bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg text-sm font-black transition-all shadow-md flex items-center gap-2"
                                             >
-                                                <Check size={16} /> GUARDAR CONTEO FISICO
+                                                <Check size={16} /> GUARDAR CONTEO
                                             </button>
-                                            {canGenerateRequisitions && (
-                                                <button disabled={inventoryData.length === 0} className="disabled:opacity-50 disabled:cursor-not-allowed bg-cyan-700 hover:bg-cyan-600 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors">
-                                                    Exportar Reporte
-                                                </button>
-                                            )}
                                         </div>
                                     </div>
 
-                                    <div className="overflow-x-auto">
-                                        {filteredData.length === 0 ? (
-                                            <div className="p-10 text-center flex flex-col items-center justify-center text-slate-500">
-                                                <FileSpreadsheet className="size-10 mb-2 opacity-50" />
-                                                <p>No hay datos cargados en el sistema para esta sucursal.</p>
-                                                <p className="text-sm">Sube tu primer Kardex de Gamasoft.</p>
-                                            </div>
-                                        ) : (
+                                    {isMobileMode ? (
+                                        <MobileInventoryMode
+                                            data={filteredData}
+                                            onUpdateFisico={updateFisico}
+                                            onUpdateMermas={updateMermas}
+                                            canEdit={canEditPhysical}
+                                        />
+                                    ) : (
+                                        <div className="overflow-x-auto">
                                             <table className="w-full text-left text-sm whitespace-nowrap">
-                                                <thead className="bg-[#111622] text-slate-400">
+                                                <thead className="bg-slate-100 text-slate-500 border-b border-slate-200">
                                                     <tr>
-                                                        <th className="px-6 py-4 font-medium">Articulo</th>
-                                                        <th className="px-6 py-4 font-medium text-right">Inv. Inicial</th>
-                                                        <th className="px-6 py-4 font-medium text-right">Salida Ventas</th>
-                                                        <th className="px-6 py-4 font-medium text-right border-x border-white/5 bg-[#181f2f]/50 text-cyan-400">Teórico Gamasoft</th>
-                                                        <th className="px-6 py-4 font-medium text-right bg-emerald-950/20 text-emerald-400 border-cyan-900 shadow-[inset_0_4px_10px_rgba(16,185,129,0.05)]">Físico Real (Editar)</th>
-                                                        <th className="px-6 py-4 font-medium text-right">Diferencia</th>
-                                                        <th className="px-6 py-4 font-medium text-center border-r border-white/5">Estado de Control</th>
-                                                        {canSelectForReport && <th className="px-6 py-4 font-medium text-center text-amber-500 bg-amber-950/10">A Reporte Cajero</th>}
+                                                        <th className="px-6 py-4 font-black uppercase text-[10px] tracking-wider">Articulo</th>
+                                                        <th className="px-6 py-4 font-black uppercase text-[10px] tracking-wider text-right">Inv. Inicial</th>
+                                                        <th className="px-6 py-4 font-black uppercase text-[10px] tracking-wider text-right">Salida Ventas</th>
+                                                        <th className="px-6 py-4 font-black uppercase text-[10px] tracking-wider text-right bg-rose-50 text-rose-700">Mermas (Editar)</th>
+                                                        <th className="px-6 py-4 font-black uppercase text-[10px] tracking-wider text-right border-x border-slate-200 bg-cyan-50 text-cyan-700">Teórico Final</th>
+                                                        <th className="px-6 py-4 font-black uppercase text-[10px] tracking-wider text-right bg-emerald-50 text-emerald-700">Físico Real (Editar)</th>
+                                                        <th className="px-6 py-4 font-black uppercase text-[10px] tracking-wider text-right">Diferencia</th>
+                                                        <th className="px-6 py-4 font-black uppercase text-[10px] tracking-wider text-center border-r border-slate-200">Estado de Control</th>
+                                                        {canSelectForReport && <th className="px-6 py-4 font-black uppercase text-[10px] tracking-wider text-center text-amber-700 bg-amber-50">A Reporte Cajero</th>}
                                                     </tr>
                                                 </thead>
-                                                <tbody className="divide-y divide-white/5 text-slate-300">
+                                                <tbody className="divide-y divide-slate-100 text-slate-600 font-medium">
                                                     {filteredData.map((row) => (
-                                                        <tr key={row.id} className="hover:bg-[#111622] transition-colors group">
-                                                            <td className="px-6 py-4 font-medium text-slate-200">{row.articulo}</td>
-                                                            <td className="px-6 py-4 text-right">{row.inicial}</td>
-                                                            <td className="px-6 py-4 text-right text-amber-500">{row.salidaVentas}</td>
-                                                            <td className="px-6 py-4 text-right font-bold text-cyan-400 border-x border-white/5 bg-[#181f2f]/30">{row.teorico}</td>
+                                                        <tr key={row.id} className="hover:bg-slate-50 transition-colors group">
+                                                            <td className="px-6 py-4 font-bold text-slate-900">{row.articulo}</td>
+                                                            <td className="px-6 py-4 text-right text-slate-500">{row.inicial}</td>
+                                                            <td className="px-6 py-4 text-right text-amber-600 font-bold">{row.salidaVentas}</td>
+                                                            {/* Celda Editable para Mermas */}
+                                                            <td className="px-4 py-2 text-right bg-rose-50/30">
+                                                                <input
+                                                                    type="number"
+                                                                    disabled={!canEditPhysical}
+                                                                    value={row.mermas}
+                                                                    onChange={(e) => updateMermas(row.id, e.target.value)}
+                                                                    className={cn(
+                                                                        "w-20 bg-white border text-rose-700 font-black px-3 py-1.5 rounded text-right focus:outline-none focus:ring-2 focus:ring-rose-500/20 transition-all",
+                                                                        !canEditPhysical ? "border-transparent opacity-70" : "border-rose-200 shadow-sm hover:border-rose-400"
+                                                                    )}
+                                                                />
+                                                            </td>
+                                                            <td className="px-6 py-4 text-right font-black text-cyan-700 border-x border-slate-100 bg-cyan-50/30">{row.teorico}</td>
                                                             {/* Celda Editable para el Inventario Físico */}
-                                                            <td className="px-4 py-2 text-right bg-emerald-950/10 border-r border-white/5">
+                                                            <td className="px-4 py-2 text-right bg-emerald-50/30 border-r border-slate-100">
                                                                 <input
                                                                     type="number"
                                                                     disabled={!canEditPhysical}
                                                                     value={row.fisico}
                                                                     onChange={(e) => updateFisico(row.id, e.target.value)}
                                                                     className={cn(
-                                                                        "w-24 bg-emerald-950/40 border text-emerald-400 font-bold px-3 py-1.5 rounded text-right focus:outline-none focus:border-emerald-400 transition-colors shadow-inner",
-                                                                        !canEditPhysical ? "border-transparent opacity-70" : "border-emerald-500/30 hover:border-emerald-500/50"
+                                                                        "w-24 bg-white border text-emerald-700 font-black px-3 py-1.5 rounded text-right focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all",
+                                                                        !canEditPhysical ? "border-transparent opacity-70" : "border-emerald-200 shadow-sm hover:border-emerald-400"
                                                                     )}
                                                                 />
                                                             </td>
                                                             <td className="px-6 py-4 text-right">
                                                                 <span className={cn(
-                                                                    "px-2 py-1 rounded-md font-bold text-sm",
-                                                                    row.dif < 0 ? "text-rose-400 bg-rose-400/10 border border-rose-400/20" :
-                                                                        row.dif > 0 ? "text-emerald-400 bg-emerald-400/10 border border-emerald-400/20" : "text-slate-400"
+                                                                    "px-2 py-1 rounded-md font-black text-xs",
+                                                                    row.dif < 0 ? "text-rose-700 bg-rose-50 border border-rose-100" :
+                                                                        row.dif > 0 ? "text-emerald-700 bg-emerald-50 border border-emerald-100" : "text-slate-400"
                                                                 )}>
                                                                     {row.dif > 0 ? '+' : ''}{row.dif}
                                                                 </span>
                                                             </td>
                                                             <td className="px-6 py-4 text-center">
                                                                 <div className={cn(
-                                                                    "inline-flex items-center justify-center min-w-[80px] gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border",
-                                                                    row.estado === 'Fuga' ? "border-rose-500/30 text-rose-400 bg-rose-500/10" :
-                                                                        row.estado === 'Ahorro' ? "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" : "border-slate-700 text-slate-400 bg-slate-800"
+                                                                    "inline-flex items-center justify-center min-w-[80px] gap-1.5 px-3 py-1 rounded-full text-[10px] font-black border",
+                                                                    row.estado === 'Fuga' ? "border-rose-200 text-rose-700 bg-rose-50" :
+                                                                        row.estado === 'Ahorro' ? "border-emerald-200 text-emerald-700 bg-emerald-50" : "border-slate-200 text-slate-500 bg-slate-100"
                                                                 )}>
                                                                     {row.estado === 'Fuga' && <AlertTriangle size={12} />}
                                                                     {row.estado === 'Ahorro' && <TrendingUp size={12} />}
@@ -865,12 +974,12 @@ export default function Dashboard() {
                                                                 </div>
                                                             </td>
                                                             {canSelectForReport && (
-                                                                <td className="px-6 py-4 text-center bg-amber-950/5">
+                                                                <td className="px-6 py-4 text-center bg-amber-50/30">
                                                                     <input
                                                                         type="checkbox"
                                                                         checked={row.reportarPlanCero}
                                                                         onChange={() => toggleReportar(row.id)}
-                                                                        className="w-5 h-5 rounded border-slate-600 bg-slate-800 text-cyan-500 accent-amber-500 cursor-pointer"
+                                                                        className="w-5 h-5 rounded border-slate-300 bg-white text-cyan-600 accent-amber-500 cursor-pointer"
                                                                     />
                                                                 </td>
                                                             )}
@@ -878,8 +987,8 @@ export default function Dashboard() {
                                                     ))}
                                                 </tbody>
                                             </table>
-                                        )}
-                                    </div>
+                                        </div>
+                                    )}
                                 </div>
                             )}
 
@@ -955,6 +1064,7 @@ export default function Dashboard() {
                             isOpen={isNewReqModalOpen}
                             onClose={() => setIsNewReqModalOpen(false)}
                             inventoryData={inventoryData}
+                            catalog={catalog}
                             activeSucursal={activeSucursal}
                             onSave={async (req: any) => {
                                 const prod = catalog.find(p => p.nombre.toLowerCase() === req.articulo.toLowerCase());
@@ -996,7 +1106,7 @@ export default function Dashboard() {
                         className="fixed bottom-8 right-8 z-[60] size-16 bg-gradient-to-tr from-indigo-600 to-cyan-500 rounded-full shadow-2xl flex items-center justify-center text-white hover:scale-110 transition-all group animate-bounce-subtle"
                     >
                         <Bot size={28} className="group-hover:rotate-12 transition-transform" />
-                        <div className="absolute -top-1 -right-1 size-4 bg-emerald-500 rounded-full border-2 border-[#0A0D14]" />
+                        <div className="absolute -top-1 -right-1 size-4 bg-emerald-500 rounded-full border-2 border-white" />
                     </button>
 
                     {/* Ventana de GamaAI */}
@@ -1088,13 +1198,19 @@ export default function Dashboard() {
                                     if (!sedeId) throw new Error("No se pudo determinar la sede para el cargue.");
 
                                     // 2. Verificar productos faltantes en el catálogo y agregarlos automáticamente
-                                    const missingProductsFromExcel = data.filter(item =>
+                                    const missingProductsFromExcelRaw = data.filter(item =>
                                         !catalog.some(p => p.nombre.toLowerCase() === item.articulo.toLowerCase())
                                     );
 
-                                    if (missingProductsFromExcel.length > 0) {
-                                        const newProductsToInsert = missingProductsFromExcel.map((p, i) => ({
-                                            id: `P-AUTO-${Date.now()}-${i}`,
+                                    // Local catalog copy to maintain sync during this execution
+                                    let currentCatalog = [...catalog];
+
+                                    // Eliminar duplicados en la misma carga de Excel para evitar error de Unique Constraint en DB
+                                    const uniqueMissingProducts = Array.from(new Set(missingProductsFromExcelRaw.map(p => p.articulo.toLowerCase())))
+                                        .map(name => missingProductsFromExcelRaw.find(p => p.articulo.toLowerCase() === name)!);
+
+                                    if (uniqueMissingProducts.length > 0) {
+                                        const newProductsToInsert = uniqueMissingProducts.map((p, i) => ({
                                             nombre: p.articulo,
                                             unidad: 'UND',
                                             costo_unitario: p.costo || 0
@@ -1109,19 +1225,21 @@ export default function Dashboard() {
                                             const formatted = createdProducts.map(p => ({
                                                 id: p.id,
                                                 nombre: p.nombre,
-                                                unidad: p.unidad,
+                                                unidad: p.unit || p.unidad || 'UND',
                                                 costoPorUnidad: Number(p.costo_unitario)
                                             }));
                                             setCatalog(prev => [...prev, ...formatted]);
-                                            // Actualizar lista local para que el mapeo siguiente funcione
-                                            catalog.push(...formatted);
+                                            currentCatalog = [...currentCatalog, ...formatted];
                                         }
-                                        if (prodError) console.error("Error auto-creando productos:", prodError);
+                                        if (prodError) {
+                                            console.error("Error auto-creando productos:", JSON.stringify(prodError, null, 2));
+                                            alert(`Error al crear productos: ${prodError.message || 'Error desconocido'}`);
+                                        }
                                     }
 
                                     // 3. Preparar el lote de insert/upsert
                                     const batch = data.map(item => {
-                                        const product = catalog.find(p => p.nombre.toLowerCase() === item.articulo.toLowerCase());
+                                        const product = currentCatalog.find(p => p.nombre.toLowerCase() === item.articulo.toLowerCase());
                                         if (!product) return null;
 
                                         return {
@@ -1319,13 +1437,13 @@ function RequisitionsPanel({
         <div className="animate-in fade-in duration-500">
             <div className="flex justify-between items-center mb-8">
                 <div>
-                    <h2 className="text-3xl font-black text-white">Centro de Requisiciones</h2>
+                    <h2 className="text-3xl font-black text-slate-900">Centro de Requisiciones</h2>
                     <p className="text-slate-500 mt-1">Gestiona el flujo de mercancía entre puntos de venta y bodega central.</p>
                 </div>
                 {["ADMIN", "SUPERVISOR"].includes(role) && (
                     <button
                         onClick={onAdd}
-                        className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 px-6 py-3 rounded-2xl font-black text-sm transition-all shadow-[0_0_20px_rgba(34,211,238,0.2)] flex items-center gap-2"
+                        className="bg-cyan-600 hover:bg-cyan-700 text-white px-6 py-3 rounded-2xl font-black text-sm transition-all shadow-md flex items-center gap-2"
                     >
                         <Plus size={18} /> Nueva Requisición
                     </button>
@@ -1333,7 +1451,7 @@ function RequisitionsPanel({
             </div>
 
             {lowStockItems.length > 0 && (
-                <div className="mb-8 p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl flex items-center gap-4 text-rose-400">
+                <div className="mb-8 p-4 bg-rose-50 border border-rose-200 rounded-2xl flex items-center gap-4 text-rose-700 shadow-sm">
                     <AlertTriangle className="shrink-0" />
                     <div>
                         <p className="font-bold text-sm">Sugerencia Inteligente:</p>
@@ -1346,37 +1464,37 @@ function RequisitionsPanel({
                 {statuses.map(status => (
                     <div key={status} className="flex flex-col gap-4">
                         <div className="flex items-center justify-between px-2">
-                            <h3 className="text-xs font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
                                 <span className={cn(
                                     "size-2 rounded-full",
                                     status === 'PENDIENTE' ? "bg-amber-500" :
                                         status === 'APROBADA' ? "bg-cyan-500" :
-                                            status === 'TRANSITO' ? "bg-emerald-500" : "bg-slate-500"
+                                            status === 'TRANSITO' ? "bg-emerald-500" : "bg-slate-300"
                                 )}></span>
                                 {status}
                             </h3>
-                            <span className="text-[10px] bg-white/5 text-slate-500 px-2 py-0.5 rounded-full font-bold">
+                            <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-bold">
                                 {requisitions.filter(r => r.status === status && (activeSucursal === "Todas" || r.sucursal === activeSucursal)).length}
                             </span>
                         </div>
 
                         <div className="space-y-4">
                             {requisitions.filter(r => r.status === status && (activeSucursal === "Todas" || r.sucursal === activeSucursal)).map(req => (
-                                <div key={req.id} className="bg-[#0A0D14]/80 backdrop-blur-md p-5 rounded-2xl border border-white/5 shadow-xl hover:border-cyan-500/30 transition-all group relative">
+                                <div key={req.id} className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm hover:border-cyan-400 transition-all group relative">
                                     <div className="flex justify-between items-start mb-4">
-                                        <span className="text-[10px] font-black text-slate-600 bg-white/5 px-2 py-1 rounded ring-1 ring-white/5">{req.id}</span>
-                                        <div className="flex gap-1">
+                                        <span className="text-[10px] font-black text-slate-400 bg-slate-50 px-2 py-1 rounded border border-slate-100">{req.id}</span>
+                                        <div className="flex gap-1 text-slate-400">
                                             {status === 'PENDIENTE' && ["ADMIN", "ANALYST"].includes(role) && (
                                                 <div className="flex gap-1">
                                                     <button
                                                         onClick={() => onUpdateStatus(req.id, 'APROBADA')}
-                                                        className="p-1 hover:text-emerald-400 transition-colors" title="Aprobar"
+                                                        className="p-1 hover:text-emerald-600 transition-colors" title="Aprobar"
                                                     >
                                                         <Check size={14} />
                                                     </button>
                                                     <button
                                                         onClick={() => onDelete(req.id)}
-                                                        className="p-1 hover:text-rose-400 transition-colors" title="Rechazar"
+                                                        className="p-1 hover:text-rose-600 transition-colors" title="Rechazar"
                                                     >
                                                         <X size={14} />
                                                     </button>
@@ -1386,13 +1504,13 @@ function RequisitionsPanel({
                                                 <div className="flex gap-1">
                                                     <button
                                                         onClick={() => onUpdateStatus(req.id, 'TRANSITO')}
-                                                        className="p-1 hover:text-cyan-400 transition-colors" title="Despachar"
+                                                        className="p-1 hover:text-cyan-600 transition-colors" title="Despachar"
                                                     >
                                                         <Box size={14} />
                                                     </button>
                                                     <button
                                                         onClick={() => onPrint(req)}
-                                                        className="p-1 hover:text-amber-400 transition-colors" title="Descargar Picking List"
+                                                        className="p-1 hover:text-amber-600 transition-colors" title="Descargar Picking List"
                                                     >
                                                         <FileSpreadsheet size={14} />
                                                     </button>
@@ -1401,7 +1519,7 @@ function RequisitionsPanel({
                                             {status === 'TRANSITO' && (role === "SUPERVISOR" || role === "ADMIN") && (
                                                 <button
                                                     onClick={() => onUpdateStatus(req.id, 'ENTREGADA')}
-                                                    className="p-1 hover:text-emerald-400 transition-colors" title="Confirmar Entrega"
+                                                    className="p-1 hover:text-emerald-600 transition-colors" title="Confirmar Entrega"
                                                 >
                                                     <CheckCircle2 size={14} />
                                                 </button>
@@ -1409,28 +1527,28 @@ function RequisitionsPanel({
                                             {status === 'PENDIENTE' && (role === "ADMIN" || (role === "SUPERVISOR" && req.status === 'PENDIENTE')) && (
                                                 <button
                                                     onClick={() => onDelete(req.id)}
-                                                    className="p-1 hover:text-rose-400 transition-colors" title="Eliminar"
+                                                    className="p-1 hover:text-rose-600 transition-colors" title="Eliminar"
                                                 >
                                                     <Trash2 size={14} />
                                                 </button>
                                             )}
                                         </div>
                                     </div>
-                                    <h4 className="text-lg font-bold text-slate-100 mb-1">{req.articulo}</h4>
+                                    <h4 className="text-lg font-bold text-slate-900 mb-1">{req.articulo}</h4>
                                     <div className="flex items-center gap-2 text-xs text-slate-500 mb-4">
-                                        <MapPin size={12} className="text-cyan-500" /> {req.sucursal}
+                                        <MapPin size={12} className="text-cyan-600" /> {req.sucursal}
                                     </div>
 
                                     <div className="flex items-center justify-between">
                                         <div className="flex items-center gap-2">
                                             <span className="text-xs font-bold text-slate-400">Cantidad:</span>
-                                            <span className="text-sm font-black text-white">{req.cantidad}</span>
+                                            <span className="text-sm font-black text-slate-900">{req.cantidad}</span>
                                         </div>
                                         <span className={cn(
                                             "text-[10px] font-black px-2 py-1 rounded-full",
-                                            req.prioridad === 'ALTA' ? "bg-rose-500/10 text-rose-400 border border-rose-500/20" :
-                                                req.prioridad === 'MEDIA' ? "bg-amber-500/10 text-amber-400 border border-amber-500/20" :
-                                                    "bg-slate-800 text-slate-500"
+                                            req.prioridad === 'ALTA' ? "bg-rose-50 text-rose-700 border border-rose-100" :
+                                                req.prioridad === 'MEDIA' ? "bg-amber-50 text-amber-700 border border-amber-100" :
+                                                    "bg-slate-100 text-slate-500"
                                         )}>
                                             {req.prioridad}
                                         </span>
@@ -1466,30 +1584,30 @@ function TransfersPanel({ transfers, inventoryData, onAddTransfer }: { transfers
     return (
         <div className="animate-in fade-in duration-500">
             <div className="mb-8">
-                <h2 className="text-3xl font-black text-white">Traslados Inter-Sucursales</h2>
+                <h2 className="text-3xl font-black text-slate-900">Traslados Inter-Sucursales</h2>
                 <p className="text-slate-500 mt-1">Balanceo de inventario basado en excedentes de otros puntos.</p>
             </div>
 
             {balancingSuggestions.length > 0 && (
                 <div className="mb-8 space-y-4">
-                    <h3 className="text-xs font-black text-emerald-500 uppercase tracking-widest flex items-center gap-2">
+                    <h3 className="text-xs font-black text-emerald-600 uppercase tracking-widest flex items-center gap-2">
                         <Activity size={14} /> Sugerencias de Balanceo (Ahorra Compras)
                     </h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                         {balancingSuggestions.map((s: any, idx) => (
-                            <div key={idx} className="bg-emerald-500/5 border border-emerald-500/20 p-4 rounded-2xl flex flex-col gap-3 group hover:border-emerald-500/40 transition-all">
+                            <div key={idx} className="bg-white border border-slate-200 p-4 rounded-2xl flex flex-col gap-3 group hover:border-emerald-500 transition-all shadow-sm">
                                 <div className="flex justify-between items-start">
-                                    <span className="text-sm font-bold text-white">{s.articulo}</span>
-                                    <span className="text-[10px] font-black bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full">{s.cantidad} Und</span>
+                                    <span className="text-sm font-bold text-slate-900">{s.articulo}</span>
+                                    <span className="text-[10px] font-black bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full border border-emerald-100">{s.cantidad} Und</span>
                                 </div>
-                                <div className="flex items-center gap-3 text-xs text-slate-400">
+                                <div className="flex items-center gap-3 text-xs text-slate-500">
                                     <span className="truncate">{s.origen}</span>
-                                    <ArrowRightLeft size={12} className="shrink-0 text-emerald-500" />
+                                    <ArrowRightLeft size={12} className="shrink-0 text-emerald-600" />
                                     <span className="truncate">{s.destino}</span>
                                 </div>
                                 <button
                                     onClick={() => onAddTransfer && onAddTransfer(s)}
-                                    className="mt-2 w-full py-2 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-slate-950 text-[10px] font-black rounded-lg transition-all"
+                                    className="mt-2 w-full py-2 bg-emerald-50 hover:bg-emerald-600 text-emerald-700 hover:text-white text-[10px] font-black rounded-lg transition-all border border-emerald-100"
                                 >
                                     CREAR TRASLADO DIRECTO
                                 </button>
@@ -1499,38 +1617,38 @@ function TransfersPanel({ transfers, inventoryData, onAddTransfer }: { transfers
                 </div>
             )}
 
-            <div className="bg-[#0A0D14]/80 backdrop-blur-md rounded-2xl border border-white/5 overflow-hidden shadow-2xl">
+            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-md">
                 <table className="w-full text-left text-sm">
-                    <thead className="bg-[#111622] text-slate-400 border-b border-white/5">
+                    <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
                         <tr>
-                            <th className="px-6 py-4 font-bold">ID</th>
-                            <th className="px-6 py-4 font-bold">Artículo</th>
-                            <th className="px-6 py-4 font-bold">Cantidad</th>
-                            <th className="px-6 py-4 font-bold">Origen</th>
-                            <th className="px-6 py-4 font-bold text-center">
-                                <ArrowRightLeft size={16} className="inline mx-auto" />
+                            <th className="px-6 py-4 font-black uppercase text-[10px] tracking-widest">ID</th>
+                            <th className="px-6 py-4 font-black uppercase text-[10px] tracking-widest">Artículo</th>
+                            <th className="px-6 py-4 font-black uppercase text-[10px] tracking-widest text-right pr-12">Cantidad</th>
+                            <th className="px-6 py-4 font-black uppercase text-[10px] tracking-widest">Origen</th>
+                            <th className="px-6 py-4 font-black uppercase text-[10px] tracking-widest text-center">
+                                <ArrowRightLeft size={14} className="inline mx-auto" />
                             </th>
-                            <th className="px-6 py-4 font-bold">Destino</th>
-                            <th className="px-6 py-4 font-bold uppercase tracking-widest text-[10px]">Estado</th>
+                            <th className="px-6 py-4 font-black uppercase text-[10px] tracking-widest">Destino</th>
+                            <th className="px-6 py-4 font-black uppercase text-[10px] tracking-widest">Estado</th>
                         </tr>
                     </thead>
-                    <tbody className="divide-y divide-white/5 text-slate-300">
+                    <tbody className="divide-y divide-slate-100 text-slate-600">
                         {transfers.map(tr => (
-                            <tr key={tr.id} className="hover:bg-white/5 transition-colors">
-                                <td className="px-6 py-4 font-mono text-slate-500 text-xs">{tr.id}</td>
-                                <td className="px-6 py-4 font-bold text-white">{tr.articulo}</td>
-                                <td className="px-6 py-4 font-black text-cyan-400">{tr.cantidad}</td>
+                            <tr key={tr.id} className="hover:bg-slate-50 transition-colors">
+                                <td className="px-6 py-4 font-mono text-slate-400 text-[10px]">{tr.id}</td>
+                                <td className="px-6 py-4 font-bold text-slate-900">{tr.articulo}</td>
+                                <td className="px-6 py-4 font-black text-cyan-700 text-right pr-12">{tr.cantidad}</td>
                                 <td className="px-6 py-4">{tr.origen}</td>
-                                <td className="px-6 py-4 text-center text-slate-600">
+                                <td className="px-6 py-4 text-center text-slate-300">
                                     <ArrowRightLeft size={14} />
                                 </td>
                                 <td className="px-6 py-4">{tr.destino}</td>
                                 <td className="px-6 py-4">
                                     <span className={cn(
                                         "px-3 py-1 rounded-full text-[10px] font-black",
-                                        tr.status === 'SOLICITADO' ? "bg-amber-500/10 text-amber-500 border border-amber-500/20" :
-                                            tr.status === 'EN_CAMINO' ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20" :
-                                                "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                                        tr.status === 'SOLICITADO' ? "bg-amber-50 text-amber-700 border border-amber-100" :
+                                            tr.status === 'EN_CAMINO' ? "bg-cyan-50 text-cyan-700 border border-cyan-100" :
+                                                "bg-emerald-50 text-emerald-700 border border-emerald-100"
                                     )}>
                                         {tr.status}
                                     </span>
@@ -1544,7 +1662,7 @@ function TransfersPanel({ transfers, inventoryData, onAddTransfer }: { transfers
     );
 }
 
-function NewRequisitionModal({ isOpen, onClose, inventoryData, activeSucursal, onSave }: any) {
+function NewRequisitionModal({ isOpen, onClose, inventoryData, catalog, activeSucursal, onSave }: any) {
     const sucursalTarget = activeSucursal === "Todas" ? "Bogotá" : activeSucursal;
 
     // Sugerencias inteligentes: solo items de la sucursal que necesitan stock
@@ -1565,12 +1683,12 @@ function NewRequisitionModal({ isOpen, onClose, inventoryData, activeSucursal, o
     });
 
     return (
-        <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-xl flex items-center justify-center p-4">
-            <div className="bg-[#0A0D14] border border-white/10 rounded-3xl w-full max-w-4xl shadow-2xl flex flex-col md:flex-row overflow-hidden">
+        <div className="fixed inset-0 z-[100] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-white border border-slate-200 rounded-3xl w-full max-w-4xl shadow-2xl flex flex-col md:flex-row overflow-hidden">
                 {/* Panel lateral de sugerencias */}
-                <div className="w-full md:w-80 bg-[#0D121C] p-6 border-b md:border-b-0 md:border-r border-white/5 overflow-y-auto max-h-[400px] md:max-h-[600px]">
-                    <h3 className="text-white font-black flex items-center gap-2 mb-6">
-                        <Activity size={18} className="text-cyan-400" />
+                <div className="w-full md:w-80 bg-slate-50 p-6 border-b md:border-b-0 md:border-r border-slate-200 overflow-y-auto max-h-[400px] md:max-h-[600px]">
+                    <h3 className="text-slate-900 font-black flex items-center gap-2 mb-6">
+                        <Activity size={18} className="text-cyan-600" />
                         Smart Ordering
                     </h3>
                     <div className="space-y-3">
@@ -1578,14 +1696,14 @@ function NewRequisitionModal({ isOpen, onClose, inventoryData, activeSucursal, o
                             <button
                                 key={s.id}
                                 onClick={() => setFormData({ ...formData, articulo: s.articulo, cantidad: s.suggestedCount, prioridad: s.suggestedCount > s.stockIdeal * 0.5 ? 'ALTA' : 'MEDIA' })}
-                                className="w-full p-4 rounded-2xl bg-[#111622] border border-white/5 hover:border-cyan-500/30 text-left transition-all group"
+                                className="w-full p-4 rounded-2xl bg-white border border-slate-200 hover:border-cyan-500/30 text-left transition-all group shadow-sm"
                             >
                                 <div className="flex justify-between items-start mb-1">
-                                    <span className="text-xs font-bold text-slate-300">{s.articulo}</span>
-                                    <Plus size={12} className="text-slate-600 group-hover:text-cyan-400" />
+                                    <span className="text-xs font-bold text-slate-700">{s.articulo}</span>
+                                    <Plus size={12} className="text-slate-400 group-hover:text-cyan-600" />
                                 </div>
-                                <p className="text-sm font-black text-cyan-400">Sugiere: {s.suggestedCount} Und</p>
-                                <div className="mt-2 h-1 w-full bg-slate-800 rounded-full overflow-hidden">
+                                <p className="text-sm font-black text-cyan-600">Sugiere: {s.suggestedCount} Und</p>
+                                <div className="mt-2 h-1 w-full bg-slate-100 rounded-full overflow-hidden">
                                     <div className="h-full bg-rose-500" style={{ width: `${Math.min((s.suggestedCount / s.stockIdeal) * 100, 100)}%` }}></div>
                                 </div>
                             </button>
@@ -1597,10 +1715,10 @@ function NewRequisitionModal({ isOpen, onClose, inventoryData, activeSucursal, o
                 <div className="flex-1 p-8">
                     <div className="flex justify-between items-start mb-8">
                         <div>
-                            <h2 className="text-2xl font-black text-white">Nueva Requisición</h2>
+                            <h2 className="text-2xl font-black text-slate-900">Nueva Requisición</h2>
                             <p className="text-slate-500 text-sm">Completa los detalles de la solicitud para {sucursalTarget}.</p>
                         </div>
-                        <button onClick={onClose} className="p-2 hover:bg-white/5 rounded-full text-slate-500">
+                        <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-full text-slate-400">
                             <X size={20} />
                         </button>
                     </div>
@@ -1611,11 +1729,17 @@ function NewRequisitionModal({ isOpen, onClose, inventoryData, activeSucursal, o
                                 <label className="text-xs font-bold text-slate-500 uppercase">Artículo / Producto</label>
                                 <input
                                     type="text"
+                                    list="products-list"
                                     value={formData.articulo}
                                     onChange={(e) => setFormData({ ...formData, articulo: e.target.value })}
-                                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-400"
-                                    placeholder="Nombre del artículo"
+                                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-slate-900 focus:outline-none focus:border-cyan-500"
+                                    placeholder="Selecciona o escribe el producto"
                                 />
+                                <datalist id="products-list">
+                                    {catalog.map((p: any) => (
+                                        <option key={p.id} value={p.nombre} />
+                                    ))}
+                                </datalist>
                                 {/* Alerta de disponibilidad en otras sucursales */}
                                 {formData.articulo && inventoryData.some((item: any) => item.articulo.toLowerCase().includes(formData.articulo.toLowerCase()) && item.sucursal !== sucursalTarget && item.dif > 0) && (
                                     <div className="absolute top-full left-0 right-0 z-10 mt-2 p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl animate-in slide-in-from-top-2">
@@ -1634,7 +1758,7 @@ function NewRequisitionModal({ isOpen, onClose, inventoryData, activeSucursal, o
                                     type="number"
                                     value={formData.cantidad}
                                     onChange={(e) => setFormData({ ...formData, cantidad: Number(e.target.value) })}
-                                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-400"
+                                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-slate-900 focus:outline-none focus:border-cyan-500"
                                 />
                             </div>
                         </div>
@@ -1649,8 +1773,8 @@ function NewRequisitionModal({ isOpen, onClose, inventoryData, activeSucursal, o
                                         className={cn(
                                             "flex-1 py-3 rounded-xl border text-xs font-black transition-all",
                                             formData.prioridad === p
-                                                ? "bg-cyan-500/10 border-cyan-500 text-cyan-400 shadow-[0_0_15px_rgba(34,211,238,0.1)]"
-                                                : "bg-[#0D121C] border-white/5 text-slate-500 hover:border-white/20"
+                                                ? "bg-cyan-50 border-cyan-500 text-cyan-700 shadow-sm"
+                                                : "bg-slate-50 border-slate-200 text-slate-500 hover:border-slate-300"
                                         )}
                                     >
                                         {p}
@@ -1659,16 +1783,16 @@ function NewRequisitionModal({ isOpen, onClose, inventoryData, activeSucursal, o
                             </div>
                         </div>
 
-                        <div className="pt-6 border-t border-white/5 flex gap-4">
+                        <div className="pt-6 border-t border-slate-100 flex gap-4">
                             <button
                                 onClick={onClose}
-                                className="flex-1 py-4 bg-white/5 hover:bg-white/10 text-white font-bold rounded-2xl transition-all"
+                                className="flex-1 py-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-2xl transition-all"
                             >
                                 Cancelar
                             </button>
                             <button
                                 onClick={() => onSave({ ...formData, status: 'PENDIENTE' })}
-                                className="flex-1 py-4 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black rounded-2xl transition-all shadow-[0_0_20px_rgba(34,211,238,0.3)]"
+                                className="flex-1 py-4 bg-cyan-600 hover:bg-cyan-700 text-white font-black rounded-2xl transition-all shadow-md"
                             >
                                 Enviar Requisición
                             </button>
@@ -1831,38 +1955,38 @@ function CashierVisualReport({ inventoryData }: { inventoryData: any[] }) {
 
 function ExcelPreviewModal({ data, detectedSucursal, onClose, onConfirm }: { data: any[], detectedSucursal: string, onClose: () => void, onConfirm: (data: any[]) => void }) {
     return (
-        <div className="fixed inset-0 z-[120] bg-black/90 backdrop-blur-xl flex items-center justify-center p-4">
-            <div className="bg-[#0A0D14] border border-white/10 rounded-3xl w-full max-w-4xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-in zoom-in duration-300">
-                <div className="p-8 border-b border-white/5 bg-gradient-to-r from-cyan-500/10 to-transparent">
+        <div className="fixed inset-0 z-[120] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-white border border-slate-200 rounded-3xl w-full max-w-4xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-in zoom-in duration-300">
+                <div className="p-8 border-b border-slate-200 bg-slate-50">
                     <div className="flex justify-between items-start">
                         <div className="space-y-1">
-                            <h2 className="text-2xl font-black text-white flex items-center gap-3">
-                                <FileSpreadsheet className="text-cyan-400" /> Previsualización de Carga
+                            <h2 className="text-2xl font-black text-slate-900 flex items-center gap-3">
+                                <FileSpreadsheet className="text-cyan-600" /> Previsualización de Carga
                             </h2>
-                            <p className="text-slate-400 text-sm">Validación de datos detectados en Gamasoft</p>
+                            <p className="text-slate-500 text-sm">Validación de datos detectados en Gamasoft</p>
                         </div>
-                        <button onClick={onClose} className="p-2 hover:bg-white/5 rounded-full transition-colors">
-                            <X size={24} className="text-slate-500" />
+                        <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full transition-colors">
+                            <X size={24} className="text-slate-400" />
                         </button>
                     </div>
 
                     <div className="mt-6 flex flex-wrap gap-4">
-                        <div className="bg-white/5 px-4 py-2 rounded-xl border border-white/5 flex items-center gap-2">
-                            <MapPin size={16} className="text-cyan-500" />
-                            <span className="text-xs font-bold text-slate-500 uppercase">Sede Detectada:</span>
-                            <span className="text-sm font-black text-cyan-400">{detectedSucursal}</span>
+                        <div className="bg-white px-4 py-2 rounded-xl border border-slate-200 flex items-center gap-2 shadow-sm">
+                            <MapPin size={16} className="text-cyan-600" />
+                            <span className="text-xs font-bold text-slate-400 uppercase">Sede Detectada:</span>
+                            <span className="text-sm font-black text-cyan-700">{detectedSucursal}</span>
                         </div>
-                        <div className="bg-white/5 px-4 py-2 rounded-xl border border-white/5 flex items-center gap-2">
-                            <Box size={16} className="text-emerald-500" />
-                            <span className="text-xs font-bold text-slate-500 uppercase">Productos:</span>
-                            <span className="text-sm font-black text-emerald-400">{data.length}</span>
+                        <div className="bg-white px-4 py-2 rounded-xl border border-slate-200 flex items-center gap-2 shadow-sm">
+                            <Box size={16} className="text-emerald-600" />
+                            <span className="text-xs font-bold text-slate-400 uppercase">Productos:</span>
+                            <span className="text-sm font-black text-emerald-700">{data.length}</span>
                         </div>
                     </div>
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-8 pt-0">
                     <table className="w-full text-left text-xs">
-                        <thead className="sticky top-0 bg-[#0A0D14] py-4 border-b border-white/5 text-slate-500">
+                        <thead className="sticky top-0 bg-white py-4 border-b border-slate-200 text-slate-400">
                             <tr>
                                 <th className="py-4 font-black uppercase tracking-widest text-left">Artículo</th>
                                 <th className="py-4 font-black uppercase tracking-widest text-right">Inicial</th>
@@ -1870,13 +1994,13 @@ function ExcelPreviewModal({ data, detectedSucursal, onClose, onConfirm }: { dat
                                 <th className="py-4 font-black uppercase tracking-widest text-right">Teórico</th>
                             </tr>
                         </thead>
-                        <tbody className="divide-y divide-white/5">
+                        <tbody className="divide-y divide-slate-100">
                             {data.slice(0, 50).map((row, i) => (
-                                <tr key={i} className="hover:bg-white/5 transition-colors">
-                                    <td className="py-4 font-bold text-slate-200">{row.articulo}</td>
-                                    <td className="py-4 text-right text-slate-400">{row.inicial}</td>
-                                    <td className="py-4 text-right text-amber-500 font-bold">{row.salidaVentas}</td>
-                                    <td className="py-4 text-right text-cyan-400 font-black">{row.teorico}</td>
+                                <tr key={i} className="hover:bg-slate-50 transition-colors">
+                                    <td className="py-4 font-bold text-slate-900">{row.articulo}</td>
+                                    <td className="py-4 text-right text-slate-500 font-medium">{row.inicial}</td>
+                                    <td className="py-4 text-right text-amber-600 font-bold">{row.salidaVentas}</td>
+                                    <td className="py-4 text-right text-cyan-700 font-black">{row.teorico}</td>
                                 </tr>
                             ))}
                         </tbody>
@@ -1886,16 +2010,16 @@ function ExcelPreviewModal({ data, detectedSucursal, onClose, onConfirm }: { dat
                     )}
                 </div>
 
-                <div className="p-8 border-t border-white/5 bg-[#080B12]/80 flex justify-end gap-4">
+                <div className="p-8 border-t border-slate-200 bg-slate-50 flex justify-end gap-4">
                     <button
                         onClick={onClose}
-                        className="px-6 py-3 rounded-2xl text-sm font-bold text-slate-400 hover:text-white hover:bg-white/5 transition-all"
+                        className="px-6 py-3 rounded-2xl text-sm font-bold text-slate-400 hover:text-slate-900 transition-all"
                     >
                         CANCELAR
                     </button>
                     <button
                         onClick={() => onConfirm(data)}
-                        className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 px-8 py-3 rounded-2xl font-black text-sm transition-all shadow-[0_10px_30px_rgba(34,211,238,0.2)] flex items-center gap-2"
+                        className="bg-cyan-600 hover:bg-cyan-700 text-white px-8 py-3 rounded-2xl font-black text-sm transition-all shadow-md flex items-center gap-2"
                     >
                         <Check size={18} /> CONFIRMAR Y CARGAR SEDE
                     </button>
@@ -1921,21 +2045,21 @@ function ConsumptionPanel({ inventoryData, activeSucursal, period, setPeriod, on
         <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div>
-                    <h2 className="text-2xl font-black text-white tracking-tight">Análisis de Consumo Operativo</h2>
+                    <h2 className="text-2xl font-black text-slate-900 tracking-tight">Análisis de Consumo Operativo</h2>
                     <p className="text-slate-500 text-sm font-medium italic">Reportes de rotación y tendencias para optimización de compras</p>
                 </div>
 
                 <div className="flex items-center gap-3">
-                    <div className="flex items-center gap-2 bg-white/5 p-1 rounded-xl border border-white/10 mr-4">
+                    <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-xl border border-slate-200 mr-4">
                         <button
                             onClick={() => setPeriod("WEEKLY")}
-                            className={cn("px-4 py-2 rounded-lg text-xs font-black transition-all", period === "WEEKLY" ? "bg-cyan-500 text-slate-950 shadow-lg shadow-cyan-500/20" : "text-slate-500 hover:text-white")}
+                            className={cn("px-4 py-2 rounded-lg text-xs font-black transition-all", period === "WEEKLY" ? "bg-white text-cyan-600 shadow-sm border border-slate-200" : "text-slate-500 hover:text-slate-900")}
                         >
                             SEMANAL
                         </button>
                         <button
                             onClick={() => setPeriod("MONTHLY")}
-                            className={cn("px-4 py-2 rounded-lg text-xs font-black transition-all", period === "MONTHLY" ? "bg-cyan-500 text-slate-950 shadow-lg shadow-cyan-500/20" : "text-slate-500 hover:text-white")}
+                            className={cn("px-4 py-2 rounded-lg text-xs font-black transition-all", period === "MONTHLY" ? "bg-white text-cyan-600 shadow-sm border border-slate-200" : "text-slate-500 hover:text-slate-900")}
                         >
                             MENSUAL
                         </button>
@@ -1953,18 +2077,18 @@ function ConsumptionPanel({ inventoryData, activeSucursal, period, setPeriod, on
             {/* Grid de Análisis Superior */}
             <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
                 {/* Ranking de Rotación */}
-                <div className="bg-[#0A0D14]/80 backdrop-blur-md rounded-3xl p-6 border border-white/5 shadow-xl flex flex-col">
-                    <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-6 flex items-center gap-2">
-                        <TrendingUp size={16} className="text-emerald-400" /> Top 5 Alta Rotación
+                <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-xl flex flex-col">
+                    <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest mb-6 flex items-center gap-2">
+                        <TrendingUp size={16} className="text-emerald-600" /> Top 5 Alta Rotación
                     </h3>
                     <div className="space-y-6 flex-1">
                         {topProducts.map((product, idx) => (
                             <div key={product.id} className="relative">
                                 <div className="flex justify-between items-end mb-2">
-                                    <span className="text-sm font-bold text-slate-200">{product.articulo}</span>
-                                    <span className="text-xs font-black text-emerald-400">{product.salidaVentas} UND</span>
+                                    <span className="text-sm font-bold text-slate-900">{product.articulo}</span>
+                                    <span className="text-xs font-black text-emerald-600">{product.salidaVentas} UND</span>
                                 </div>
-                                <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
+                                <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
                                     <div
                                         className="h-full bg-gradient-to-r from-emerald-500 to-cyan-500 rounded-full"
                                         style={{ width: `${(product.salidaVentas / topProducts[0].salidaVentas) * 100}%` }}
@@ -1973,99 +2097,106 @@ function ConsumptionPanel({ inventoryData, activeSucursal, period, setPeriod, on
                             </div>
                         ))}
                     </div>
-                    <div className="mt-8 pt-6 border-t border-white/5">
+                    <div className="mt-8 pt-6 border-t border-slate-100">
                         <p className="text-[10px] text-slate-500 uppercase font-black tracking-tighter">Sugerencia de Abastecimiento:</p>
-                        <p className="text-xs text-slate-300 mt-2 leading-relaxed">Considerar aumento de stock de seguridad para <b>{topProducts[0]?.articulo}</b> por alta demanda.</p>
+                        <p className="text-xs text-slate-600 mt-2 leading-relaxed italic">Considerar aumento de stock de seguridad para <b>{topProducts[0]?.articulo}</b> por alta demanda.</p>
                     </div>
                 </div>
 
                 {/* Gráfico de Tendencia */}
-                <div className="xl:col-span-2 bg-[#0A0D14]/80 backdrop-blur-md rounded-3xl p-6 border border-white/5 shadow-xl">
-                    <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-6 flex items-center gap-2">
-                        <Activity size={16} className="text-cyan-400" /> Tendencia de Consumo Histórico
+                <div className="xl:col-span-2 bg-white rounded-3xl p-6 border border-slate-200 shadow-xl">
+                    <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest mb-6 flex items-center gap-2">
+                        <Activity size={16} className="text-cyan-600" /> Tendencia de Consumo Histórico
                     </h3>
-                    <div className="h-64">
-                        <ResponsiveContainer width="100%" height="100%">
-                            <AreaChart data={[
-                                { name: 'Sem 1', proteina: 400, bebidas: 240, secos: 300 },
-                                { name: 'Sem 2', proteina: 300, bebidas: 430, secos: 200 },
-                                { name: 'Sem 3', proteina: 550, bebidas: 380, secos: 350 },
-                                { name: 'Sem 4', proteina: 480, bebidas: 290, secos: 410 },
-                            ]}>
-                                <defs>
-                                    <linearGradient id="colorProteina" x1="0" y1="0" x2="0" y2="1">
-                                        <stop offset="5%" stopColor="#22d3ee" stopOpacity={0.1} />
-                                        <stop offset="95%" stopColor="#22d3ee" stopOpacity={0} />
-                                    </linearGradient>
-                                </defs>
-                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.05)" />
-                                <XAxis dataKey="name" fontSize={10} axisLine={false} tickLine={false} stroke="#475569" />
-                                <YAxis hide />
-                                <Tooltip
-                                    contentStyle={{ backgroundColor: '#0A0D14', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px' }}
-                                    itemStyle={{ fontSize: '12px' }}
-                                />
-                                <Area type="monotone" dataKey="proteina" stroke="#22d3ee" fillOpacity={1} fill="url(#colorProteina)" name="Proteínas" />
-                                <Area type="monotone" dataKey="bebidas" stroke="#10b981" fillOpacity={0} strokeWidth={2} strokeDasharray="5 5" name="Bebidas" />
-                            </AreaChart>
-                        </ResponsiveContainer>
+                    <div className="h-64 flex items-center justify-center">
+                        {inventoryData.length > 0 ? (
+                            <ResponsiveContainer width="100%" height="100%">
+                                <AreaChart data={[
+                                    { name: 'Sem 1', proteina: 400, bebidas: 240, secos: 300 },
+                                    { name: 'Sem 2', proteina: 300, bebidas: 430, secos: 200 },
+                                    { name: 'Sem 3', proteina: 550, bebidas: 380, secos: 350 },
+                                    { name: 'Sem 4', proteina: 480, bebidas: 290, secos: 410 },
+                                ]}>
+                                    <defs>
+                                        <linearGradient id="colorProteina" x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="5%" stopColor="#0ea5e9" stopOpacity={0.15} />
+                                            <stop offset="95%" stopColor="#0ea5e9" stopOpacity={0} />
+                                        </linearGradient>
+                                    </defs>
+                                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                                    <XAxis dataKey="name" fontSize={10} axisLine={false} tickLine={false} stroke="#94a3b8" />
+                                    <YAxis hide />
+                                    <Tooltip
+                                        contentStyle={{ backgroundColor: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '12px', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                                        itemStyle={{ fontSize: '12px' }}
+                                    />
+                                    <Area type="monotone" dataKey="proteina" stroke="#0ea5e9" fillOpacity={1} fill="url(#colorProteina)" strokeWidth={3} name="Proteínas" />
+                                    <Area type="monotone" dataKey="bebidas" stroke="#10b981" fillOpacity={0} strokeWidth={2} strokeDasharray="5 5" name="Bebidas" />
+                                </AreaChart>
+                            </ResponsiveContainer>
+                        ) : (
+                            <div className="text-center">
+                                <Activity className="size-10 text-slate-100 mx-auto mb-2" />
+                                <p className="text-slate-400 text-xs">Sin historial de consumo</p>
+                            </div>
+                        )}
                     </div>
                 </div>
             </div>
 
             {/* Tabla Detallada de Consumo */}
-            <div className="bg-[#0A0D14]/80 backdrop-blur-md rounded-3xl border border-white/5 shadow-xl overflow-hidden">
-                <div className="p-6 border-b border-white/5 flex justify-between items-center">
-                    <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest">Reporte Detallado por Item: {activeSucursal}</h3>
-                    <button className="flex items-center gap-2 text-xs font-bold text-cyan-400 hover:text-cyan-300 transition-colors">
+            <div className="bg-white rounded-3xl border border-slate-200 shadow-xl overflow-hidden mt-8">
+                <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                    <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest">Reporte Detallado por Item: {activeSucursal}</h3>
+                    <button className="flex items-center gap-2 text-xs font-bold text-cyan-600 hover:text-cyan-700 transition-colors">
                         <FileSpreadsheet size={16} /> EXPORTAR REPORTE
                     </button>
                 </div>
                 <div className="overflow-x-auto">
                     <table className="w-full text-left">
                         <thead>
-                            <tr className="bg-white/5 text-[10px] font-black text-slate-500 uppercase tracking-widest">
-                                <th className="px-8 py-4">Artículo</th>
-                                <th className="px-8 py-4 text-center">Consumo (Salidas)</th>
-                                <th className="px-8 py-4 text-right">Costo Unitario</th>
-                                <th className="px-8 py-4 text-right">Costo Total Periodo</th>
-                                <th className="px-8 py-4 text-center">Nivel de Rotación</th>
-                                <th className="px-8 py-4 text-center">Ult. Movimiento</th>
+                            <tr className="bg-slate-50/80 text-[10px] font-black text-slate-500 uppercase tracking-widest border-b border-slate-100">
+                                <th className="px-8 py-5">Artículo</th>
+                                <th className="px-8 py-5 text-center">Consumo (Salidas)</th>
+                                <th className="px-8 py-5 text-right">Costo Unitario</th>
+                                <th className="px-8 py-5 text-right">Costo Total Periodo</th>
+                                <th className="px-8 py-5 text-center">Nivel de Rotación</th>
+                                <th className="px-8 py-5 text-center">Ult. Movimiento</th>
                             </tr>
                         </thead>
-                        <tbody className="divide-y divide-white/5">
+                        <tbody className="divide-y divide-slate-100">
                             {inventoryData
                                 .filter(item => activeSucursal === "Todas" || item.sucursal === activeSucursal)
                                 .map(item => {
                                     const rotationStatus = item.salidaVentas > 30 ? "ALTA" : item.salidaVentas > 15 ? "MEDIA" : "BAJA";
                                     return (
-                                        <tr key={item.id} className="hover:bg-white/5 transition-colors">
-                                            <td className="px-8 py-4 font-bold text-slate-200">{item.articulo}</td>
-                                            <td className="px-8 py-4 text-center">
-                                                <span className="text-lg font-black text-white">{item.salidaVentas}</span>
-                                                <span className="text-[10px] text-slate-500 ml-1 uppercase font-bold">{item.unidad || 'UND'}</span>
+                                        <tr key={item.id} className="hover:bg-slate-50 transition-colors group">
+                                            <td className="px-8 py-5 font-bold text-slate-900">{item.articulo}</td>
+                                            <td className="px-8 py-5 text-center">
+                                                <span className="text-lg font-black text-slate-900">{item.salidaVentas}</span>
+                                                <span className="text-[10px] text-slate-400 ml-1 uppercase font-bold">{item.unidad || 'UND'}</span>
                                             </td>
-                                            <td className="px-8 py-4 text-right font-medium text-slate-500">
+                                            <td className="px-8 py-5 text-right font-medium text-slate-400">
                                                 ${item.costo.toLocaleString('es-CO')}
                                             </td>
-                                            <td className="px-8 py-4 text-right">
+                                            <td className="px-8 py-5 text-right">
                                                 <div className="flex flex-col items-end">
-                                                    <span className="text-sm font-black text-white">${(item.salidaVentas * item.costo).toLocaleString('es-CO')}</span>
-                                                    <span className="text-[9px] text-cyan-500 font-bold uppercase tracking-tighter">Impacto en Caja</span>
+                                                    <span className="text-sm font-black text-slate-900">${(item.salidaVentas * item.costo).toLocaleString('es-CO')}</span>
+                                                    <span className="text-[9px] text-cyan-600 font-bold uppercase tracking-tighter">Impacto en Caja</span>
                                                 </div>
                                             </td>
-                                            <td className="px-8 py-4 text-center">
+                                            <td className="px-8 py-5 text-center">
                                                 <span className={cn(
-                                                    "px-3 py-1 rounded-full text-[9px] font-black",
-                                                    rotationStatus === "ALTA" ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" :
-                                                        rotationStatus === "MEDIA" ? "bg-amber-500/10 text-amber-400 border border-amber-500/20" :
-                                                            "bg-slate-800 text-slate-500"
+                                                    "px-3 py-1 rounded-full text-[9px] font-black border",
+                                                    rotationStatus === "ALTA" ? "bg-emerald-50 text-emerald-700 border-emerald-100" :
+                                                        rotationStatus === "MEDIA" ? "bg-amber-50 text-amber-700 border-amber-100" :
+                                                            "bg-slate-100 text-slate-500 border-slate-200"
                                                 )}>
                                                     {rotationStatus}
                                                 </span>
                                             </td>
-                                            <td className="px-8 py-4 text-center text-[10px] font-bold text-slate-500">
-                                                HACE 2 HORAS
+                                            <td className="px-8 py-5 text-center text-[10px] font-bold text-slate-400 uppercase">
+                                                Hace 2 horas
                                             </td>
                                         </tr>
                                     );
@@ -2086,48 +2217,48 @@ function FinancialReportModal({ data, activeSucursal, period, history, onClose }
     onClose: () => void
 }) {
     const totalCosto = data.reduce((acc, curr) => acc + (curr.salidaVentas * curr.costo), 0);
+    const totalMermas = data.reduce((acc, curr) => acc + (curr.mermas * curr.costo), 0);
     const topRotation = [...data].sort((a, b) => b.salidaVentas - a.salidaVentas).slice(0, 5);
     const totalItems = data.length;
 
     return (
-        <div id="report-modal-overlay" className="fixed inset-0 z-[160] bg-[#020406]/98 backdrop-blur-3xl flex items-center justify-center p-0 md:p-8 overflow-y-auto custom-scrollbar">
+        <div id="report-modal-overlay" className="fixed inset-0 z-[160] bg-slate-900/40 backdrop-blur-md flex items-center justify-center p-0 md:p-8 overflow-y-auto custom-scrollbar">
             <div className="max-w-6xl w-full my-auto animate-in fade-in zoom-in-95 duration-500">
                 <div className="flex justify-between items-center mb-6 no-print px-4">
                     <div className="flex items-center gap-3">
-                        <div className="size-10 rounded-xl bg-cyan-500/20 flex items-center justify-center text-cyan-400 border border-cyan-500/30">
+                        <div className="size-10 rounded-xl bg-white flex items-center justify-center text-cyan-600 border border-slate-200 shadow-sm">
                             <TrendingUp size={20} />
                         </div>
                         <div>
-                            <h2 className="text-white font-black text-xl tracking-tight leading-none uppercase">Reporte Operativo de Alto Nivel</h2>
+                            <h2 className="text-slate-900 font-black text-xl tracking-tight leading-none uppercase">Reporte Operativo de Alto Nivel</h2>
                             <p className="text-slate-500 text-[10px] font-bold uppercase tracking-[0.2em] mt-1">Inteligencia de Negocios · Gamasoft</p>
                         </div>
                     </div>
                     <div className="flex items-center gap-3">
                         <button
                             onClick={() => window.print()}
-                            className="group relative overflow-hidden bg-white text-slate-950 px-8 py-3.5 rounded-2xl font-black text-sm flex items-center gap-2 transition-all hover:scale-105 active:scale-95 shadow-[0_20px_40px_-15px_rgba(255,255,255,0.2)]"
+                            className="group relative overflow-hidden bg-slate-900 hover:bg-slate-800 text-white px-8 py-3.5 rounded-2xl font-black text-sm flex items-center gap-2 transition-all hover:scale-105 active:scale-95 shadow-xl"
                         >
                             <span className="relative z-10 flex items-center gap-2">
                                 <Printer size={18} /> GENERAR DOCUMENTO OFICIAL
                             </span>
-                            <div className="absolute inset-0 bg-gradient-to-r from-cyan-400 to-emerald-400 opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
                         </button>
                         <button
                             onClick={onClose}
-                            className="bg-white/5 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 p-3.5 rounded-2xl border border-white/5 transition-all"
+                            className="bg-white hover:bg-slate-50 text-slate-400 hover:text-rose-600 p-3.5 rounded-2xl border border-slate-200 transition-all shadow-sm"
                         >
                             <X size={20} />
                         </button>
                     </div>
                 </div>
 
-                <div id="financial-report" className="bg-[#fcfdfd] text-slate-900 rounded-[2.5rem] shadow-[0_50px_100px_-20px_rgba(0,0,0,0.5)] overflow-hidden font-sans border border-white/10 print:m-0 print:rounded-none print:shadow-none min-h-[11in] relative print:block print:w-[210mm] print:bg-white report-container">
-                    <div className="relative h-2 bg-gradient-to-r from-cyan-600 via-slate-900 to-emerald-600 no-print"></div>
+                <div id="financial-report" className="bg-white text-slate-900 rounded-[2.5rem] shadow-[0_50px_100px_-20px_rgba(0,0,0,0.15)] overflow-hidden font-sans border border-slate-200 print:m-0 print:rounded-none print:shadow-none min-h-[11in] relative print:block print:w-[210mm] print:bg-white report-container">
+                    <div className="relative h-2 bg-gradient-to-r from-cyan-600 via-slate-700 to-emerald-600 no-print"></div>
 
                     <div className="p-10 md:p-20 relative print:p-8">
                         <div className="flex flex-col md:flex-row justify-between items-start gap-12 relative z-10">
                             <div className="max-w-xl">
-                                <div className="inline-flex items-center gap-2 px-3 py-1 bg-slate-900 text-white text-[9px] font-black uppercase tracking-[0.3em] rounded-md mb-6">
+                                <div className="inline-flex items-center gap-2 px-3 py-1 bg-slate-100 text-slate-600 text-[9px] font-black uppercase tracking-[0.3em] rounded-md mb-6 border border-slate-200">
                                     Confidencial · Junta Directiva
                                 </div>
                                 <h1 className="text-6xl font-black tracking-tighter text-slate-900 leading-[0.9] mb-4">
@@ -2150,18 +2281,20 @@ function FinancialReportModal({ data, activeSucursal, period, history, onClose }
                             </div>
 
                             <div className="w-full md:w-auto">
-                                <div className="bg-slate-900 text-white p-8 md:p-12 rounded-[2rem] shadow-2xl relative overflow-hidden group min-w-[320px] print:p-8 print:min-w-0 print:w-full">
-                                    <div className="absolute top-0 right-0 p-4 opacity-10">
-                                        <Activity size={80} />
+                                <div className="bg-white border-2 border-slate-900 text-slate-900 p-8 md:p-12 rounded-[2rem] shadow-2xl relative overflow-hidden group min-w-[320px] print:p-8 print:min-w-0 print:w-full">
+                                    <div className="absolute top-0 right-0 p-4 opacity-5">
+                                        <Activity size={80} className="text-slate-900" />
                                     </div>
-                                    <p className="text-xs font-black uppercase tracking-[0.4em] mb-4 opacity-60">Valorización de Consumo</p>
+                                    <p className="text-xs font-black uppercase tracking-[0.4em] mb-4 text-slate-400">Total Financiero (Costos+Mermas)</p>
                                     <p className="text-5xl md:text-6xl font-black tracking-tighter leading-none mb-4">
-                                        ${totalCosto.toLocaleString('es-CO')}
+                                        ${(totalCosto + totalMermas).toLocaleString('es-CO')}
                                     </p>
-                                    <div className="h-1 w-24 bg-cyan-500 rounded-full mb-6 print:mb-4"></div>
-                                    <p className="text-sm font-medium text-slate-400 leading-snug">
-                                        Impacto neto de salidas valorizadas según catálogo maestro de costos.
-                                    </p>
+                                    <div className="flex gap-4 mb-6">
+                                        <div className="h-1.5 flex-1 bg-cyan-600 rounded-full"></div>
+                                        <div className="h-1.5 flex-[0.3] bg-rose-500 rounded-full"></div>
+                                    </div>
+                                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Costo Consumo: ${totalCosto.toLocaleString('es-CO')}</p>
+                                    <p className="text-[10px] font-black uppercase tracking-widest text-rose-500">Mermas Reportadas: ${totalMermas.toLocaleString('es-CO')}</p>
                                 </div>
                             </div>
                         </div>
@@ -2211,14 +2344,14 @@ function FinancialReportModal({ data, activeSucursal, period, history, onClose }
                                 <h3 className="text-lg font-black uppercase tracking-[0.2em] text-slate-900 italic">Desglose de Artículos de Mayor Impacto</h3>
                                 <div className="flex-1 h-px bg-slate-100"></div>
                             </div>
-                            <div className="rounded-[1.5rem] border border-slate-100 overflow-hidden bg-white/50 print:border-slate-200">
+                            <div className="rounded-[1.5rem] border border-slate-200 overflow-hidden bg-white print:border-slate-300 shadow-sm">
                                 <table className="w-full border-collapse">
                                     <thead>
-                                        <tr className="bg-slate-900 text-white text-left print:bg-slate-800">
-                                            <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest">Artículo</th>
-                                            <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-center">Rotación</th>
-                                            <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-right">Monto</th>
-                                            <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-right">%</th>
+                                        <tr className="bg-slate-50 text-slate-900 text-left border-b border-slate-200">
+                                            <th className="px-6 py-5 text-[10px] font-black uppercase tracking-widest">Artículo</th>
+                                            <th className="px-6 py-5 text-[10px] font-black uppercase tracking-widest text-center">Rotación</th>
+                                            <th className="px-6 py-5 text-[10px] font-black uppercase tracking-widest text-right">Monto</th>
+                                            <th className="px-6 py-5 text-[10px] font-black uppercase tracking-widest text-right">%</th>
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-slate-100">
@@ -2266,11 +2399,11 @@ function FinancialReportModal({ data, activeSucursal, period, history, onClose }
                                 <h4 className="flex items-center gap-2 text-xs font-black text-slate-900 uppercase tracking-widest mb-6 border-b border-slate-100 pb-4">
                                     <TrendingUp size={16} className="text-emerald-600" /> Plan de Acción Propuesto
                                 </h4>
-                                <div className="bg-slate-900 text-white p-6 rounded-[1.5rem] plan-box">
-                                    <p className="text-xs opacity-80 mb-4">Pedidos automáticos inteligentes (Smart Orders):</p>
+                                <div className="bg-slate-50 border border-slate-200 p-6 rounded-[1.5rem] plan-box">
+                                    <p className="text-xs text-slate-500 font-bold mb-4">Pedidos automáticos inteligentes (Smart Orders):</p>
                                     <div className="grid grid-cols-2 gap-4">
-                                        <div className="bg-white/5 p-3 rounded-xl font-mono text-[10px] text-cyan-400">APROBACIÓN: AUTO</div>
-                                        <div className="bg-white/5 p-3 rounded-xl font-mono text-[10px] text-emerald-400">STOCK SUGERIDO: +12%</div>
+                                        <div className="bg-white border border-slate-100 p-3 rounded-xl font-mono text-[10px] text-cyan-600 shadow-sm">APROBACIÓN: AUTO</div>
+                                        <div className="bg-white border border-slate-100 p-3 rounded-xl font-mono text-[10px] text-emerald-600 shadow-sm">STOCK SUGERIDO: +12%</div>
                                     </div>
                                 </div>
                             </div>
@@ -2330,10 +2463,10 @@ function FinancialReportModal({ data, activeSucursal, period, history, onClose }
                         .recharts-responsive-container { height: 250px !important; min-height: 250px !important; width: 100% !important; }
                         .page-break-inside-avoid { page-break-inside: avoid !important; break-inside: avoid !important; }
                         .action-plan-section { margin-top: 20pt !important; }
-                        .plan-box { background-color: #0f172a !important; color: white !important; }
+                        .plan-box { background-color: #f8fafc !important; color: #0f172a !important; border: 0.5pt solid #e2e8f0 !important; }
                         table { width: 100% !important; border-spacing: 0 !important; }
-                        th { background-color: #0f172a !important; color: white !important; padding: 6pt !important; font-size: 8pt !important; }
-                        td { padding: 6pt !important; border-bottom: 0.5pt solid #f1f5f9 !important; }
+                        th { background-color: #f8fafc !important; color: #0f172a !important; padding: 8pt !important; font-size: 8pt !important; border-bottom: 0.5pt solid #e2e8f0 !important; }
+                        td { padding: 8pt !important; border-bottom: 0.5pt solid #f1f5f9 !important; }
                     }
                     .custom-scrollbar::-webkit-scrollbar { width: 8px; }
                     .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
@@ -2364,25 +2497,25 @@ function CatalogPanel({ catalog, onUpdateCatalog }: { catalog: Product[], onUpda
         <div className="space-y-6">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div>
-                    <h2 className="text-2xl font-black text-white tracking-tight">Catálogo Maestro de Productos</h2>
+                    <h2 className="text-2xl font-black text-slate-900 tracking-tight">Catálogo Maestro de Productos</h2>
                     <p className="text-slate-500 text-sm font-medium">Define nombres, unidades y costos base para el cuadre financiero</p>
                 </div>
                 <button
                     onClick={() => setIsAdding(true)}
-                    className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 px-6 py-3 rounded-2xl font-black text-sm transition-all shadow-lg flex items-center gap-2"
+                    className="bg-cyan-600 hover:bg-cyan-700 text-white px-6 py-3 rounded-2xl font-black text-sm transition-all shadow-md flex items-center gap-2"
                 >
                     <Plus size={18} /> AGREGAR PRODUCTO
                 </button>
             </div>
 
-            <div className="bg-[#0A0D14]/80 backdrop-blur-md rounded-3xl border border-white/5 shadow-2xl overflow-hidden">
-                <div className="p-6 border-b border-white/5 flex items-center gap-4">
+            <div className="bg-white rounded-3xl border border-slate-200 shadow-xl overflow-hidden">
+                <div className="p-6 border-b border-slate-100 flex items-center gap-4">
                     <div className="relative flex-1 max-w-md">
-                        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
+                        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                         <input
                             type="text"
                             placeholder="Buscar en el catálogo..."
-                            className="w-full bg-white/5 border border-white/10 rounded-xl py-3 pl-12 pr-4 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500/50 transition-all"
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 pl-12 pr-4 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all shadow-inner"
                             value={searchTerm}
                             onChange={(e) => setSearchTerm(e.target.value)}
                         />
@@ -2392,7 +2525,7 @@ function CatalogPanel({ catalog, onUpdateCatalog }: { catalog: Product[], onUpda
                 <div className="overflow-x-auto">
                     <table className="w-full text-left">
                         <thead>
-                            <tr className="bg-white/5 text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">
+                            <tr className="bg-slate-50 text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] border-b border-slate-100">
                                 <th className="px-8 py-5">Cod</th>
                                 <th className="px-8 py-5">Nombre del Producto</th>
                                 <th className="px-8 py-5">Unidad</th>
@@ -2400,22 +2533,22 @@ function CatalogPanel({ catalog, onUpdateCatalog }: { catalog: Product[], onUpda
                                 <th className="px-8 py-5 text-center">Acciones</th>
                             </tr>
                         </thead>
-                        <tbody className="divide-y divide-white/5">
+                        <tbody className="divide-y divide-slate-50">
                             {filteredCatalog.map(item => (
-                                <tr key={item.id} className="hover:bg-white/5 transition-colors group">
-                                    <td className="px-8 py-5 text-xs font-mono text-slate-500">{item.id}</td>
-                                    <td className="px-8 py-5 font-bold text-slate-100">{item.nombre}</td>
+                                <tr key={item.id} className="hover:bg-slate-50 transition-colors group">
+                                    <td className="px-8 py-5 text-xs font-mono text-slate-400">{item.id}</td>
+                                    <td className="px-8 py-5 font-bold text-slate-900">{item.nombre}</td>
                                     <td className="px-8 py-5">
-                                        <span className="px-3 py-1 bg-slate-800 text-slate-400 rounded-lg text-[10px] font-black uppercase">
+                                        <span className="px-3 py-1 bg-slate-100 text-slate-500 rounded-lg text-[10px] font-black uppercase border border-slate-200">
                                             {item.unidad}
                                         </span>
                                     </td>
-                                    <td className="px-8 py-5 text-right font-black text-cyan-400">
+                                    <td className="px-8 py-5 text-right font-black text-cyan-700">
                                         ${item.costoPorUnidad.toLocaleString('es-CO')}
                                     </td>
                                     <td className="px-8 py-5">
-                                        <div className="flex justify-center">
-                                            <button className="p-2 hover:bg-cyan-500/10 hover:text-cyan-400 rounded-lg transition-colors text-slate-500">
+                                        <div className="flex justify-center text-slate-400">
+                                            <button className="p-2 hover:bg-slate-100 hover:text-cyan-600 rounded-lg transition-colors">
                                                 <Filter size={16} />
                                             </button>
                                         </div>
@@ -2428,15 +2561,15 @@ function CatalogPanel({ catalog, onUpdateCatalog }: { catalog: Product[], onUpda
             </div>
 
             {isAdding && (
-                <div className="fixed inset-0 z-[150] bg-black/95 backdrop-blur-xl flex items-center justify-center p-4">
-                    <div className="bg-[#0A0D14] border border-white/10 rounded-3xl w-full max-w-md p-8 shadow-2xl animate-in zoom-in duration-300">
-                        <h3 className="text-xl font-black text-white mb-6">Nuevo Producto Maestro</h3>
+                <div className="fixed inset-0 z-[150] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+                    <div className="bg-white border border-slate-200 rounded-3xl w-full max-w-md p-8 shadow-2xl animate-in zoom-in duration-300">
+                        <h3 className="text-xl font-black text-slate-900 mb-6">Nuevo Producto Maestro</h3>
                         <div className="space-y-5">
                             <div>
-                                <label className="block text-xs font-black text-slate-500 uppercase mb-2">Nombre del Artículo (Igual al Excel)</label>
+                                <label className="block text-xs font-black text-slate-400 uppercase mb-2">Nombre del Artículo (Igual al Excel)</label>
                                 <input
                                     type="text"
-                                    className="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
+                                    className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 shadow-inner"
                                     placeholder="Ej: Pollo, Coca Cola..."
                                     value={newProduct.nombre}
                                     onChange={e => setNewProduct({ ...newProduct, nombre: e.target.value })}
@@ -2444,23 +2577,23 @@ function CatalogPanel({ catalog, onUpdateCatalog }: { catalog: Product[], onUpda
                             </div>
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
-                                    <label className="block text-xs font-black text-slate-500 uppercase mb-2">Unidad de Medida</label>
+                                    <label className="block text-xs font-black text-slate-400 uppercase mb-2">Unidad de Medida</label>
                                     <select
-                                        className="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
+                                        className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 shadow-inner"
                                         value={newProduct.unidad}
                                         onChange={e => setNewProduct({ ...newProduct, unidad: e.target.value })}
                                     >
-                                        <option value="UND" className="bg-slate-900">Unidad (UND)</option>
-                                        <option value="KG" className="bg-slate-900">Kilogramo (KG)</option>
-                                        <option value="GR" className="bg-slate-900">Gramo (GR)</option>
-                                        <option value="PORC" className="bg-slate-900">Porción (PORC)</option>
+                                        <option value="UND">Unidad (UND)</option>
+                                        <option value="KG">Kilogramo (KG)</option>
+                                        <option value="GR">Gramo (GR)</option>
+                                        <option value="PORC">Porción (PORC)</option>
                                     </select>
                                 </div>
                                 <div>
-                                    <label className="block text-xs font-black text-slate-500 uppercase mb-2">Costo Sugerido</label>
+                                    <label className="block text-xs font-black text-slate-400 uppercase mb-2">Costo Sugerido</label>
                                     <input
                                         type="number"
-                                        className="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
+                                        className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 shadow-inner"
                                         value={newProduct.costoPorUnidad}
                                         onChange={e => setNewProduct({ ...newProduct, costoPorUnidad: Number(e.target.value) })}
                                     />
@@ -2469,13 +2602,13 @@ function CatalogPanel({ catalog, onUpdateCatalog }: { catalog: Product[], onUpda
                             <div className="flex gap-4 pt-4">
                                 <button
                                     onClick={() => setIsAdding(false)}
-                                    className="flex-1 px-6 py-4 rounded-2xl text-sm font-bold text-slate-400 hover:text-white hover:bg-white/5"
+                                    className="flex-1 px-6 py-4 rounded-2xl text-sm font-bold text-slate-400 hover:text-slate-900 hover:bg-slate-100 transition-all"
                                 >
                                     CANCELAR
                                 </button>
                                 <button
                                     onClick={handleAdd}
-                                    className="flex-1 bg-cyan-500 hover:bg-cyan-400 text-slate-950 px-6 py-4 rounded-2xl font-black text-sm"
+                                    className="flex-1 bg-cyan-600 hover:bg-cyan-700 text-white px-6 py-4 rounded-2xl font-black text-sm transition-all shadow-md"
                                 >
                                     GUARDAR
                                 </button>
@@ -2492,19 +2625,19 @@ function ChoosingView() { }
 
 function PickingListModal({ req, onClose }: { req: Requisition, onClose: () => void }) {
     return (
-        <div className="fixed inset-0 z-[110] bg-black/95 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
-            <div className="max-w-md w-full my-8">
+        <div className="fixed inset-0 z-[110] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+            <div className="max-w-md w-full my-8 animate-in zoom-in duration-300">
                 <div className="flex justify-end mb-4 no-print">
                     <div className="flex gap-3">
                         <button
                             onClick={() => window.print()}
-                            className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 px-6 py-2 rounded-xl font-black text-xs flex items-center gap-2 transition-all"
+                            className="bg-cyan-600 hover:bg-cyan-700 text-white px-6 py-2.5 rounded-xl font-black text-xs flex items-center gap-2 transition-all shadow-lg"
                         >
                             <Printer size={16} /> IMPRIMIR (80mm)
                         </button>
                         <button
                             onClick={onClose}
-                            className="bg-white/10 hover:bg-white/20 text-white px-6 py-2 rounded-xl font-black text-xs transition-all"
+                            className="bg-white hover:bg-slate-50 text-slate-500 border border-slate-200 px-6 py-2.5 rounded-xl font-black text-xs transition-all shadow-sm"
                         >
                             CERRAR
                         </button>
@@ -2613,21 +2746,21 @@ function PickingListModal({ req, onClose }: { req: Requisition, onClose: () => v
 
 function KPICard({ title, value, icon, trend, trendUp, color, alert }: any) {
     const iconColors = {
-        cyan: "text-cyan-400 bg-cyan-400/10 border-cyan-400/20",
-        emerald: "text-emerald-400 bg-emerald-400/10 border-emerald-400/20",
-        rose: "text-rose-400 bg-rose-400/10 border-rose-400/20",
+        cyan: "text-cyan-600 bg-cyan-50 border-cyan-200",
+        emerald: "text-emerald-600 bg-emerald-50 border-emerald-200",
+        rose: "text-rose-600 bg-rose-50 border-rose-200",
     };
 
     return (
         <div className={cn(
-            "bg-[#0A0D14]/80 backdrop-blur-md rounded-2xl p-5 border border-white/5 relative overflow-hidden group shadow-xl transition-all hover:-translate-y-1 hover:shadow-2xl",
-            alert && "border-rose-500/30 shadow-[0_0_20px_rgba(244,63,94,0.1)]"
+            "bg-white rounded-2xl p-5 border border-slate-200 relative overflow-hidden group shadow-sm transition-all hover:-translate-y-1 hover:shadow-md",
+            alert && "border-rose-300 shadow-[0_0_20px_rgba(244,63,94,0.1)]"
         )}>
-            {alert && <div className="absolute top-0 right-0 w-32 h-32 bg-rose-500/10 rounded-full blur-3xl -mr-10 -mt-10" />}
+            {alert && <div className="absolute top-0 right-0 w-32 h-32 bg-rose-50 rounded-full blur-3xl -mr-10 -mt-10" />}
             <div className="flex justify-between items-start z-10 relative">
                 <div className="space-y-2">
-                    <p className="text-slate-400 font-medium text-sm tracking-wide">{title}</p>
-                    <p className={cn("text-3xl font-bold tracking-tight", alert ? "text-rose-100" : "text-white")}>{value}</p>
+                    <p className="text-slate-500 font-bold text-sm tracking-wide">{title}</p>
+                    <p className={cn("text-3xl font-black tracking-tight", alert ? "text-rose-600" : "text-slate-900")}>{value}</p>
                 </div>
                 <div className={cn("p-2 rounded-xl border", iconColors[color as keyof typeof iconColors])}>
                     {icon}
@@ -2654,12 +2787,12 @@ function SedesPanel({ sedes, onAdd }: { sedes: Sede[], onAdd: (s: any) => void }
         <div className="space-y-6">
             <div className="flex justify-between items-center">
                 <div>
-                    <h2 className="text-2xl font-black text-white uppercase tracking-tight">Puntos de Venta (Sedes)</h2>
+                    <h2 className="text-2xl font-black text-slate-900 uppercase tracking-tight">Puntos de Venta (Sedes)</h2>
                     <p className="text-slate-500 text-sm">Gestiona la infraestructura operativa de la red</p>
                 </div>
                 <button
                     onClick={() => setIsAdding(true)}
-                    className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-6 py-3 rounded-2xl font-black text-sm transition-all"
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-3 rounded-2xl font-black text-sm transition-all shadow-md"
                 >
                     NUEVA SEDE
                 </button>
@@ -2667,15 +2800,15 @@ function SedesPanel({ sedes, onAdd }: { sedes: Sede[], onAdd: (s: any) => void }
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 {sedes.map(sede => (
-                    <div key={sede.id} className="bg-[#0A0D14]/60 border border-white/5 p-6 rounded-3xl hover:border-emerald-500/30 transition-all group">
+                    <div key={sede.id} className="bg-white border border-slate-200 p-6 rounded-3xl hover:border-emerald-400 transition-all group shadow-sm">
                         <div className="flex justify-between items-start mb-4">
-                            <div className="size-12 rounded-2xl bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+                            <div className="size-12 rounded-2xl bg-emerald-50 flex items-center justify-center text-emerald-600 border border-emerald-100">
                                 <MapPin size={24} />
                             </div>
-                            <span className="text-[10px] font-black text-slate-500 bg-white/5 px-2 py-1 rounded tracking-widest uppercase">{sede.prefijo}</span>
+                            <span className="text-[10px] font-black text-slate-400 bg-slate-100 px-2 py-1 rounded tracking-widest uppercase border border-slate-200">{sede.prefijo}</span>
                         </div>
-                        <h3 className="text-xl font-bold text-white mb-1">{sede.nombre}</h3>
-                        <p className="text-slate-500 text-sm flex items-center gap-2">
+                        <h3 className="text-xl font-bold text-slate-900 mb-1">{sede.nombre}</h3>
+                        <p className="text-slate-500 text-sm flex items-center gap-2 font-medium">
                             {sede.ubicacion}
                         </p>
                     </div>
@@ -2683,34 +2816,34 @@ function SedesPanel({ sedes, onAdd }: { sedes: Sede[], onAdd: (s: any) => void }
             </div>
 
             {isAdding && (
-                <div className="fixed inset-0 z-[200] bg-black/90 flex items-center justify-center p-4">
-                    <div className="bg-slate-900 border border-white/10 p-8 rounded-[2rem] w-full max-w-md">
-                        <h3 className="text-2xl font-black text-white mb-6 uppercase tracking-tight">Nueva Sede Operativa</h3>
+                <div className="fixed inset-0 z-[200] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+                    <div className="bg-white border border-slate-200 p-8 rounded-[2rem] w-full max-w-md shadow-2xl">
+                        <h3 className="text-2xl font-black text-slate-900 mb-6 uppercase tracking-tight">Nueva Sede Operativa</h3>
                         <div className="space-y-4">
                             <div>
-                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">Nombre de la Sede</label>
+                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Nombre de la Sede</label>
                                 <input
                                     type="text"
-                                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+                                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 shadow-inner"
                                     value={newItem.nombre}
                                     onChange={e => setNewItem({ ...newItem, nombre: e.target.value })}
                                 />
                             </div>
                             <div>
-                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">Dirección / Ubicación</label>
+                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Dirección / Ubicación</label>
                                 <input
                                     type="text"
-                                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+                                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 shadow-inner"
                                     value={newItem.ubicacion}
                                     onChange={e => setNewItem({ ...newItem, ubicacion: e.target.value })}
                                 />
                             </div>
                             <div>
-                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">Prefijo (e.g. BOG)</label>
+                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Prefijo (e.g. BOG)</label>
                                 <input
                                     type="text"
                                     maxLength={3}
-                                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+                                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 shadow-inner"
                                     value={newItem.prefijo}
                                     onChange={e => setNewItem({ ...newItem, prefijo: e.target.value.toUpperCase() })}
                                 />
@@ -2718,7 +2851,7 @@ function SedesPanel({ sedes, onAdd }: { sedes: Sede[], onAdd: (s: any) => void }
                             <div className="flex gap-4 pt-4">
                                 <button
                                     onClick={() => setIsAdding(false)}
-                                    className="flex-1 py-4 font-bold text-slate-400 hover:text-white"
+                                    className="flex-1 py-4 font-bold text-slate-400 hover:text-slate-900 hover:bg-slate-100 transition-all rounded-xl"
                                 >
                                     CANCELAR
                                 </button>
@@ -2728,7 +2861,7 @@ function SedesPanel({ sedes, onAdd }: { sedes: Sede[], onAdd: (s: any) => void }
                                         setIsAdding(false);
                                         setNewItem({ nombre: "", ubicacion: "", prefijo: "" });
                                     }}
-                                    className="flex-1 bg-emerald-500 text-slate-950 font-black py-4 rounded-xl"
+                                    className="flex-1 bg-emerald-600 text-white font-black py-4 rounded-xl shadow-md"
                                 >
                                     GUARDAR
                                 </button>
@@ -2749,20 +2882,20 @@ function UsersPanel({ users, sedes, onAdd }: { users: UserAccount[], sedes: Sede
         <div className="space-y-6">
             <div className="flex justify-between items-center">
                 <div>
-                    <h2 className="text-2xl font-black text-white uppercase tracking-tight">Gestión de Usuarios</h2>
+                    <h2 className="text-2xl font-black text-slate-900 uppercase tracking-tight">Gestión de Usuarios</h2>
                     <p className="text-slate-500 text-sm">Control de accesos y responsabilidades por sede</p>
                 </div>
                 <button
                     onClick={() => setIsAdding(true)}
-                    className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 px-6 py-3 rounded-2xl font-black text-sm transition-all"
+                    className="bg-cyan-600 hover:bg-cyan-700 text-white px-6 py-3 rounded-2xl font-black text-sm transition-all shadow-md"
                 >
                     NUEVO USUARIO
                 </button>
             </div>
 
-            <div className="bg-[#0A0D14]/80 backdrop-blur-md rounded-3xl border border-white/5 overflow-hidden">
+            <div className="bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-md">
                 <table className="w-full text-left">
-                    <thead className="bg-white/5 uppercase text-[10px] font-black text-slate-500 tracking-widest">
+                    <thead className="bg-slate-50 uppercase text-[10px] font-black text-slate-500 tracking-widest border-b border-slate-100">
                         <tr>
                             <th className="px-8 py-5">Nombre</th>
                             <th className="px-8 py-5">Rol</th>
@@ -2770,27 +2903,27 @@ function UsersPanel({ users, sedes, onAdd }: { users: UserAccount[], sedes: Sede
                             <th className="px-8 py-5">Estado</th>
                         </tr>
                     </thead>
-                    <tbody className="divide-y divide-white/5">
+                    <tbody className="divide-y divide-slate-50">
                         {users.map(user => (
-                            <tr key={user.id} className="hover:bg-white/5 transition-colors">
+                            <tr key={user.id} className="hover:bg-slate-50 transition-colors">
                                 <td className="px-8 py-5">
-                                    <p className="font-bold text-white">{user.nombre}</p>
-                                    <p className="text-xs text-slate-500">{user.email}</p>
+                                    <p className="font-bold text-slate-900">{user.nombre}</p>
+                                    <p className="text-xs text-slate-400">{user.email}</p>
                                 </td>
                                 <td className="px-8 py-5">
                                     <span className={cn(
                                         "px-3 py-1 rounded-full text-[10px] font-black tracking-widest",
-                                        user.rol === 'ADMIN' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20'
+                                        user.rol === 'ADMIN' ? 'bg-rose-50 text-rose-700 border border-rose-100' : 'bg-cyan-50 text-cyan-700 border border-cyan-100'
                                     )}>
                                         {user.rol}
                                     </span>
                                 </td>
-                                <td className="px-8 py-5 text-slate-300 font-medium">
+                                <td className="px-8 py-5 text-slate-600 font-medium">
                                     {sedes.find(s => s.id === user.sedeId)?.nombre || 'Sin Sede'}
                                 </td>
                                 <td className="px-8 py-5">
-                                    <div className="flex items-center gap-2 text-emerald-400 text-xs font-bold">
-                                        <div className="size-2 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(16,185,129,0.5)]"></div>
+                                    <div className="flex items-center gap-2 text-emerald-600 text-xs font-bold">
+                                        <div className="size-2 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(16,185,129,0.3)]"></div>
                                         Activo
                                     </div>
                                 </td>
@@ -2801,33 +2934,33 @@ function UsersPanel({ users, sedes, onAdd }: { users: UserAccount[], sedes: Sede
             </div>
 
             {isAdding && (
-                <div className="fixed inset-0 z-[200] bg-black/90 flex items-center justify-center p-4">
-                    <div className="bg-slate-900 border border-white/10 p-8 rounded-[2rem] w-full max-w-md">
-                        <h3 className="text-2xl font-black text-white mb-6 uppercase tracking-tight">Crear Usuario Operativo</h3>
+                <div className="fixed inset-0 z-[200] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+                    <div className="bg-white border border-slate-200 p-8 rounded-[2rem] w-full max-w-md shadow-2xl">
+                        <h3 className="text-2xl font-black text-slate-900 mb-6 uppercase tracking-tight">Crear Usuario Operativo</h3>
                         <div className="space-y-4">
                             <div>
-                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">Nombre Completo</label>
+                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Nombre Completo</label>
                                 <input
                                     type="text"
-                                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
+                                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 shadow-inner"
                                     value={newItem.nombre}
                                     onChange={e => setNewItem({ ...newItem, nombre: e.target.value })}
                                 />
                             </div>
                             <div>
-                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">Correo Electrónico</label>
+                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Correo Electrónico</label>
                                 <input
                                     type="email"
-                                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
+                                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 shadow-inner"
                                     value={newItem.email}
                                     onChange={e => setNewItem({ ...newItem, email: e.target.value })}
                                 />
                             </div>
                             <div>
-                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">Contraseña Inicial</label>
+                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Contraseña Inicial</label>
                                 <input
                                     type="password"
-                                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
+                                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 shadow-inner"
                                     value={newItem.password}
                                     onChange={e => setNewItem({ ...newItem, password: e.target.value })}
                                     placeholder="Mín. 6 caracteres"
@@ -2835,9 +2968,9 @@ function UsersPanel({ users, sedes, onAdd }: { users: UserAccount[], sedes: Sede
                             </div>
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
-                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">Rol</label>
+                                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Rol</label>
                                     <select
-                                        className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none tracking-tight"
+                                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-slate-900 focus:outline-none tracking-tight shadow-inner"
                                         value={newItem.rol}
                                         onChange={e => {
                                             const newRol = e.target.value as Role;
@@ -2848,26 +2981,26 @@ function UsersPanel({ users, sedes, onAdd }: { users: UserAccount[], sedes: Sede
                                             });
                                         }}
                                     >
-                                        <option value="CASHIER" className="bg-slate-900">Cajero</option>
-                                        <option value="SUPERVISOR" className="bg-slate-900">Supervisor</option>
-                                        <option value="ANALYST" className="bg-slate-900">Analista</option>
-                                        <option value="ADMIN" className="bg-slate-900">Administrador</option>
+                                        <option value="CASHIER">Cajero</option>
+                                        <option value="SUPERVISOR">Supervisor</option>
+                                        <option value="ANALYST">Analista</option>
+                                        <option value="ADMIN">Administrador</option>
                                     </select>
                                 </div>
                                 <div>
-                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">Sede Asignada</label>
+                                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Sede Asignada</label>
                                     <select
                                         className={cn(
-                                            "w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none tracking-tight transition-opacity",
-                                            newItem.rol !== "CASHIER" && "opacity-50 pointer-events-none"
+                                            "w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-slate-900 focus:outline-none tracking-tight transition-all shadow-inner",
+                                            newItem.rol !== "CASHIER" && "opacity-50 pointer-events-none bg-slate-100"
                                         )}
                                         value={newItem.sedeId}
                                         onChange={e => setNewItem({ ...newItem, sedeId: e.target.value })}
                                         disabled={newItem.rol !== "CASHIER"}
                                     >
-                                        <option value="" className="bg-slate-900">{newItem.rol === "CASHIER" ? "-- Seleccionar Sede --" : "Acceso Global (Todas)"}</option>
+                                        <option value="">{newItem.rol === "CASHIER" ? "-- Seleccionar Sede --" : "Acceso Global (Todas)"}</option>
                                         {sedes.map(s => (
-                                            <option key={s.id} value={s.id} className="bg-slate-900">{s.nombre}</option>
+                                            <option key={s.id} value={s.id}>{s.nombre}</option>
                                         ))}
                                     </select>
                                 </div>
@@ -2920,42 +3053,42 @@ function GamaAIBot({ messages, onClose, onSend }: any) {
     };
 
     return (
-        <div className="fixed bottom-28 right-8 z-[70] w-[400px] h-[600px] bg-[#0D121C]/90 backdrop-blur-2xl border border-white/10 rounded-3xl shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-5">
+        <div className="fixed bottom-28 right-8 z-[70] w-[400px] h-[600px] bg-white border border-slate-200 rounded-3xl shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-5">
             {/* Header del Bot */}
-            <div className="p-6 bg-gradient-to-r from-indigo-600/20 to-cyan-500/20 border-b border-white/5 flex items-center justify-between">
+            <div className="p-6 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                    <div className="size-10 rounded-2xl bg-gradient-to-tr from-indigo-600 to-cyan-500 flex items-center justify-center shadow-lg shadow-cyan-500/20">
+                    <div className="size-10 rounded-2xl bg-gradient-to-tr from-indigo-600 to-cyan-500 flex items-center justify-center shadow-lg">
                         <Sparkles size={20} className="text-white" />
                     </div>
                     <div>
-                        <h3 className="text-sm font-black text-white">GamaAI Assistant</h3>
+                        <h3 className="text-sm font-black text-slate-900">GamaAI Assistant</h3>
                         <div className="flex items-center gap-1.5">
                             <div className="size-1.5 bg-emerald-500 rounded-full animate-pulse" />
-                            <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">En Línea</span>
+                            <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest">En Línea</span>
                         </div>
                     </div>
                 </div>
-                <button onClick={onClose} className="p-2 hover:bg-white/5 rounded-xl text-slate-500 hover:text-white transition-colors">
+                <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-xl text-slate-400 hover:text-slate-900 transition-colors">
                     <X size={20} />
                 </button>
             </div>
 
             {/* Cuerpo del Chat */}
-            <div ref={scrollRef} className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
+            <div ref={scrollRef} className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar bg-white">
                 {messages.map((m: any, idx: number) => (
                     <div key={idx} className={cn(
                         "flex flex-col gap-2 max-w-[85%]",
                         m.role === 'user' ? "ml-auto items-end" : "items-start"
                     )}>
                         <div className={cn(
-                            "px-4 py-3 rounded-2xl text-sm leading-relaxed",
+                            "px-4 py-3 rounded-2xl text-sm leading-relaxed shadow-sm",
                             m.role === 'user'
-                                ? "bg-cyan-500 text-slate-950 font-medium rounded-tr-none"
-                                : "bg-white/5 text-slate-200 border border-white/5 rounded-tl-none backdrop-blur-sm"
+                                ? "bg-cyan-600 text-white font-medium rounded-tr-none"
+                                : "bg-slate-50 text-slate-700 border border-slate-100 rounded-tl-none"
                         )}>
                             {m.content}
                         </div>
-                        <span className="text-[9px] font-black text-slate-600 uppercase tracking-tighter">
+                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-tighter">
                             {m.role === 'user' ? 'Tú' : 'GamaAI'} • {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </span>
                     </div>
@@ -2963,13 +3096,13 @@ function GamaAIBot({ messages, onClose, onSend }: any) {
             </div>
 
             {/* Input del Chat */}
-            <div className="p-6 border-t border-white/5">
+            <div className="p-6 border-t border-slate-100 bg-slate-50/50">
                 <div className="grid grid-cols-2 gap-2 mb-4">
                     {['Resumen de fugas', 'Sugerir traslados'].map(pill => (
                         <button
                             key={pill}
                             onClick={() => onSend(pill)}
-                            className="px-3 py-2 bg-white/5 border border-white/5 rounded-xl text-[10px] font-bold text-slate-400 hover:text-white hover:bg-white/10 transition-all text-left"
+                            className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-[10px] font-bold text-slate-500 hover:text-slate-900 hover:border-cyan-300 transition-all text-left shadow-sm"
                         >
                             {pill}
                         </button>
@@ -2981,15 +3114,124 @@ function GamaAIBot({ messages, onClose, onSend }: any) {
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         placeholder="Pregunta algo sobre tu inventario..."
-                        className="flex-1 bg-white/5 border border-white/10 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-500/50 transition-colors"
+                        className="flex-1 bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-cyan-500 transition-colors shadow-inner"
                     />
                     <button
                         type="submit"
-                        className="p-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-2xl transition-all shadow-lg shadow-cyan-500/20"
+                        className="p-3 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl transition-all shadow-lg"
                     >
                         <Send size={18} />
                     </button>
                 </form>
+            </div>
+        </div>
+    );
+}
+
+function MobileInventoryMode({ data, onUpdateFisico, onUpdateMermas, canEdit }: any) {
+    const [searchTerm, setSearchTerm] = useState("");
+    const filtered = data.filter((item: any) => item.articulo.toLowerCase().includes(searchTerm.toLowerCase()));
+
+    return (
+        <div className="p-4 bg-slate-50 min-h-screen">
+            <div className="sticky top-0 z-10 bg-slate-50/80 backdrop-blur-md pb-4 pt-2">
+                <div className="relative">
+                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                    <input
+                        type="text"
+                        placeholder="Escanear o buscar producto..."
+                        className="w-full bg-white border border-slate-200 rounded-2xl py-4 pl-12 pr-4 text-sm font-bold shadow-sm"
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                    />
+                    <button className="absolute right-4 top-1/2 -translate-y-1/2 p-2 bg-slate-900 text-white rounded-xl shadow-lg">
+                        <QrCode size={18} />
+                    </button>
+                </div>
+            </div>
+
+            <div className="space-y-4 mt-4">
+                {filtered.map((item: any) => (
+                    <div key={item.id} className="bg-white rounded-3xl p-6 border border-slate-200 shadow-sm relative overflow-hidden group">
+                        {/* Indicador de Estado lateral */}
+                        <div className={cn(
+                            "absolute top-0 left-0 w-2 h-full",
+                            item.dif < 0 ? "bg-rose-500" : item.dif > 0 ? "bg-emerald-500" : "bg-cyan-500"
+                        )} />
+
+                        <div className="flex justify-between items-start mb-6">
+                            <div>
+                                <h4 className="text-lg font-black text-slate-900 leading-none mb-1">{item.articulo}</h4>
+                                <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest">{item.sucursal} • Stock Inicial: {item.inicial}</span>
+                            </div>
+                            <div className="flex flex-col items-end">
+                                <span className={cn(
+                                    "px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest",
+                                    item.dif < 0 ? "bg-rose-50 text-rose-600" : "bg-emerald-50 text-emerald-600"
+                                )}>
+                                    Dif: {item.dif}
+                                </span>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Físico en Bodega</label>
+                                <div className="relative flex items-center">
+                                    <input
+                                        type="number"
+                                        disabled={!canEdit}
+                                        value={item.fisico}
+                                        onChange={(e) => onUpdateFisico(item.id, e.target.value)}
+                                        className="w-full bg-emerald-50/50 border-2 border-emerald-100 rounded-2xl py-5 text-center text-2xl font-black text-emerald-700 focus:outline-none focus:border-emerald-500 transition-all shadow-inner"
+                                        placeholder="0"
+                                    />
+                                    <div className="absolute right-3 p-1 bg-emerald-100 rounded-lg text-emerald-600">
+                                        <Check size={14} />
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Merma / Desperdicio</label>
+                                <div className="relative flex items-center">
+                                    <input
+                                        type="number"
+                                        disabled={!canEdit}
+                                        value={item.mermas}
+                                        onChange={(e) => onUpdateMermas(item.id, e.target.value)}
+                                        className="w-full bg-rose-50/50 border-2 border-rose-100 rounded-2xl py-5 text-center text-2xl font-black text-rose-700 focus:outline-none focus:border-rose-500 transition-all shadow-inner"
+                                        placeholder="0"
+                                    />
+                                    <div className="absolute right-3 p-1 bg-rose-100 rounded-lg text-rose-600">
+                                        <Trash2 size={14} />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="mt-6 pt-4 border-t border-slate-100 flex justify-between items-center">
+                            <div className="flex gap-4">
+                                <div className="text-center">
+                                    <p className="text-[8px] font-black text-slate-400 uppercase tracking-tighter">Ventas</p>
+                                    <p className="text-sm font-bold text-slate-700">{item.salidaVentas}</p>
+                                </div>
+                                <div className="text-center">
+                                    <p className="text-[8px] font-black text-slate-400 uppercase tracking-tighter">Teórico</p>
+                                    <p className="text-sm font-bold text-cyan-600">{item.teorico}</p>
+                                </div>
+                            </div>
+                            <p className="text-[9px] font-medium text-slate-400 italic">Clic para más detalles</p>
+                        </div>
+                    </div>
+                ))}
+
+                {filtered.length === 0 && (
+                    <div className="py-20 text-center text-slate-400">
+                        <Search className="size-12 mx-auto mb-4 opacity-20" />
+                        <p className="font-bold">No se encontró el artículo</p>
+                        <p className="text-sm">Prueba con otro nombre o escanea el QR</p>
+                    </div>
+                )}
             </div>
         </div>
     );

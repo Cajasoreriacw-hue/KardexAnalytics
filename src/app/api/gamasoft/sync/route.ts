@@ -70,27 +70,28 @@ async function getGamasoftToken(): Promise<string> {
     const password = process.env.GAMASOFT_PASSWORD;
 
     if (!email || !password) {
-        throw new Error("Credenciales de Gamasoft no configuradas en .env.local");
+        throw new Error("Credenciales de Gamasoft no configuradas en el panel de Cloudflare (Variables de Entorno)");
     }
 
     const loginUrl = `${GAMASOFT_BASE}/usuarios/auth/${encodeURIComponent(email)}/${encodeURIComponent(password)}/0`;
 
+    // Headers idénticos a los de SvelteKit que sí funcionaron
     const response = await fetch(loginUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Accept": "text/plain" },
     });
 
     if (!response.ok) {
         throw new Error(`Error de autenticación en Gamasoft: ${response.status}`);
     }
 
-    const token = await response.text();
+    const token = (await response.text()).trim();
 
-    if (!token || token.length < 50) {
+    if (!token || token.length < 20) {
         throw new Error("Token de Gamasoft inválido o vacío");
     }
 
-    return token.trim();
+    return token;
 }
 
 // ==========================================

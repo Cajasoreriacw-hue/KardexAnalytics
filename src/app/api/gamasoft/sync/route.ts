@@ -173,16 +173,12 @@ export async function POST(request: NextRequest) {
         const token = await getGamasoftToken();
         console.log("[Gamasoft] ✅ Token obtenido");
 
-        // 2. Consultar TODOS los artículos (Sin límites de Vercel)
-        console.log(`[Gamasoft] Consultando ${ARTICULOS_CITY_U.length} artículos...`);
+        // 2. Consultar TODOS los artículos en un solo bloque paralelo para evitar timeouts de Vercel
+        console.log(`[Gamasoft] Consultando ${ARTICULOS_CITY_U.length} artículos en ráfaga...`);
 
-        const resultados: any[] = [];
-
-        // Procesamos en lotes de 10 para máxima velocidad en Vercel
-        const BATCH_SIZE = 10;
-        for (let i = 0; i < ARTICULOS_CITY_U.length; i += BATCH_SIZE) {
-            const batch = ARTICULOS_CITY_U.slice(i, i + BATCH_SIZE);
-            const results_batch = await Promise.all(batch.map(async (art) => {
+        // En Vercel no tenemos límite de 50 peticiones, así que disparamos todo de golpe
+        const resultados_crudos = await Promise.all(ARTICULOS_CITY_U.map(async (art) => {
+            try {
                 const data = await fetchKardexArticulo(token, art.id, targetDate);
                 if (data) {
                     return {
@@ -195,20 +191,18 @@ export async function POST(request: NextRequest) {
                     };
                 }
                 return null;
-            }));
+            } catch (pErr) {
+                console.error(`Error en artículo ${art.nombre}:`, pErr);
+                return null;
+            }
+        }));
 
-            results_batch.forEach(r => { if (r) resultados.push(r); });
-        }
-
-        // 3. Filtrar solo los que tuvieron movimiento
-        const conMovimiento = resultados.filter((r) => r.cantidadSalidas > 0 || r.cantidadEntradas > 0);
-
-        console.log(`[Gamasoft] ✅ ${conMovimiento.length} artículos con movimiento de ${resultados.length} consultados`);
-
+        const resultados = resultados_crudos.filter(r => r !== null);
+        
         if (resultados.length === 0) {
             return NextResponse.json({ 
-                error: "No se obtuvieron datos de Gamasoft. Verifica que las credenciales (Email/Pass) estén configuradas en Cloudflare y que el servidor de Gamasoft esté respondiendo.",
-                code: "CONN_ERROR" 
+                error: "No se obtuvieron datos de Gamasoft. Revisa los logs de Vercel para ver si hay bloqueos de IP o credenciales inválidas.",
+                code: "EMPTY_DATA" 
             }, { status: 500 });
         }
 
@@ -220,10 +214,10 @@ export async function POST(request: NextRequest) {
             data: resultados
         });
     } catch (error: any) {
-        console.error("Gamasoft Sync Error:", error);
+        console.error("Vercel Sync Error:", error);
         return NextResponse.json({ 
-            error: error.message || "Error interno en la sincronización con Gamasoft",
-            details: "Si esto ocurre en la nube y no en local, es un bloqueo de SSL o faltan Variables de Entorno en Cloudflare."
+            error: `Error: ${error.message}`,
+            details: "Si el error persiste, revisa si pusiste las variables GAMASOFT_EMAIL/PASSWORD en el panel de Vercel (Project Settings > Environment Variables)."
         }, { status: 500 });
     }
 }

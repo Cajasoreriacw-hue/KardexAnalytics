@@ -168,30 +168,20 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: "targetDate es requerido" }, { status: 400 });
         }
 
-        // 1. Autenticarse
-        console.log("[Gamasoft] Autenticando...");
+        console.log(`[Gamasoft Sync] 📅 Fecha: ${targetDate}`);
+
         const token = await getGamasoftToken();
         console.log("[Gamasoft] ✅ Token obtenido");
 
-        // 2. Consultar cada artículo en paralelo
-        // NOTA: Cloudflare Free tiene un límite de 50 sub-requests por ejecución.
-        // Limitamos a los primeros 22 artículos para no exceder ese límite (1 login + 22*2 = 45 llamadas)
-        const articulosLimitados = ARTICULOS_CITY_U.slice(0, 22);
-        console.log(`[Gamasoft] Consultando ${articulosLimitados.length} artículos (Límite por Cloudflare)...`);
+        // 2. Consultar TODOS los artículos (Sin límites de Vercel)
+        console.log(`[Gamasoft] Consultando ${ARTICULOS_CITY_U.length} artículos...`);
 
-        const resultados: Array<{
-            id: number;
-            nombre: string;
-            unidad: string;
-            cantidadSalidas: number;
-            cantidadEntradas: number;
-            cantidadInventarioInicial: number;
-        }> = [];
+        const resultados: any[] = [];
 
-        // Procesamos en lotes para mayor eficiencia
-        const BATCH_SIZE = 5;
-        for (let i = 0; i < articulosLimitados.length; i += BATCH_SIZE) {
-            const batch = articulosLimitados.slice(i, i + BATCH_SIZE);
+        // Procesamos en lotes de 10 para máxima velocidad en Vercel
+        const BATCH_SIZE = 10;
+        for (let i = 0; i < ARTICULOS_CITY_U.length; i += BATCH_SIZE) {
+            const batch = ARTICULOS_CITY_U.slice(i, i + BATCH_SIZE);
             const results_batch = await Promise.all(batch.map(async (art) => {
                 const data = await fetchKardexArticulo(token, art.id, targetDate);
                 if (data) {
@@ -207,10 +197,7 @@ export async function POST(request: NextRequest) {
                 return null;
             }));
 
-            // Filtrar nulos y añadir a resultados
-            results_batch.forEach(r => {
-                if (r) resultados.push(r);
-            });
+            results_batch.forEach(r => { if (r) resultados.push(r); });
         }
 
         // 3. Filtrar solo los que tuvieron movimiento

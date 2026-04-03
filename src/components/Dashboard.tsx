@@ -824,13 +824,18 @@ export default function Dashboard() {
             // RUTA GAMASOFT: Si la sede es City U / Principal, usa Gamasoft
             // ============================================================
             if (isGamasoftSede) {
-                const response = await fetch('/api/gamasoft/sync', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                const syncResponse = await fetch("/api/gamasoft/sync", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ targetDate: selectedDate })
                 });
 
-                const result = await response.json();
+                if (!syncResponse.ok) {
+                    const errData = await syncResponse.json();
+                    throw new Error(errData.error || "Error al sincronizar con Gamasoft.");
+                }
+
+                const result = await syncResponse.json();
                 if (!result.success || !result.data) {
                     throw new Error(result.error || "No se pudo sincronizar con Gamasoft.");
                 }

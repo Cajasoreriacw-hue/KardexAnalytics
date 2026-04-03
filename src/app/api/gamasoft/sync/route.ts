@@ -173,8 +173,11 @@ export async function POST(request: NextRequest) {
         const token = await getGamasoftToken();
         console.log("[Gamasoft] ✅ Token obtenido");
 
-        // 2. Consultar cada artículo en paralelo (máximo 5 a la vez para no saturar)
-        console.log(`[Gamasoft] Consultando ${ARTICULOS_CITY_U.length} artículos para fecha ${targetDate}...`);
+        // 2. Consultar cada artículo en paralelo
+        // NOTA: Cloudflare Free tiene un límite de 50 sub-requests por ejecución.
+        // Limitamos a los primeros 22 artículos para no exceder ese límite (1 login + 22*2 = 45 llamadas)
+        const articulosLimitados = ARTICULOS_CITY_U.slice(0, 22);
+        console.log(`[Gamasoft] Consultando ${articulosLimitados.length} artículos (Límite por Cloudflare)...`);
 
         const resultados: Array<{
             id: number;
@@ -185,29 +188,29 @@ export async function POST(request: NextRequest) {
             cantidadInventarioInicial: number;
         }> = [];
 
-        // Procesamos en lotes de 5 para no saturar la API de Gamasoft
+        // Procesamos en lotes para mayor eficiencia
         const BATCH_SIZE = 5;
-        for (let i = 0; i < ARTICULOS_CITY_U.length; i += BATCH_SIZE) {
-            const batch = ARTICULOS_CITY_U.slice(i, i + BATCH_SIZE);
-            const promises = batch.map(async (articulo) => {
-                const dato = await fetchKardexArticulo(token, articulo.id, targetDate);
-                if (dato) {
+        for (let i = 0; i < articulosLimitados.length; i += BATCH_SIZE) {
+            const batch = articulosLimitados.slice(i, i + BATCH_SIZE);
+            const results_batch = await Promise.all(batch.map(async (art) => {
+                const data = await fetchKardexArticulo(token, art.id, targetDate);
+                if (data) {
                     return {
-                        id: articulo.id,
-                        nombre: articulo.nombre,
-                        unidad: articulo.unidad,
-                        cantidadSalidas: dato.cantidadSalidas,
-                        cantidadEntradas: dato.cantidadEntradas,
-                        cantidadInventarioInicial: dato.cantidadInventarioInicial,
+                        id: art.id,
+                        nombre: art.nombre,
+                        unidad: art.unidad,
+                        cantidadSalidas: data.cantidadSalidas,
+                        cantidadEntradas: data.cantidadEntradas,
+                        cantidadInventarioInicial: data.cantidadInventarioInicial
                     };
                 }
                 return null;
-            });
+            }));
 
-            const batchResults = await Promise.all(promises);
-            for (const r of batchResults) {
+            // Filtrar nulos y añadir a resultados
+            results_batch.forEach(r => {
                 if (r) resultados.push(r);
-            }
+            });
         }
 
         // 3. Filtrar solo los que tuvieron movimiento

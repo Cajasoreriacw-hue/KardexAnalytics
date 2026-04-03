@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const runtime = 'nodejs';
+
 // Gamasoft usa un certificado SSL no estándar en su servidor gd3
 // Next.js/Node rechaza la conexión sin este override
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";

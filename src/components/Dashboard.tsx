@@ -222,6 +222,19 @@ export default function Dashboard() {
     const [wasteHistory, setWasteHistory] = useState<any[]>([]);
     const [isFetchingHistory, setIsFetchingHistory] = useState(false);
 
+    const getColombiaDate = () => {
+        const now = new Date();
+        const options: Intl.DateTimeFormatOptions = { 
+            timeZone: "America/Bogota", 
+            year: 'numeric', 
+            month: '2-digit', 
+            day: '2-digit' 
+        };
+        return new Intl.DateTimeFormat('en-CA', options).format(now);
+    };
+
+    const initialDate = getColombiaDate();
+
     const [isMobileMode, setIsMobileMode] = useState(false);
     const [isConsumptionReportOpen, setIsConsumptionReportOpen] = useState(false);
     const [consumptionPeriod, setConsumptionPeriod] = useState<"WEEKLY" | "MONTHLY">("WEEKLY");
@@ -235,7 +248,9 @@ export default function Dashboard() {
     ]);
     const [botInput, setBotInput] = useState('');
 
-    const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+    const [selectedDate, setSelectedDate] = useState(initialDate);
+    const [consumptionStartDate, setConsumptionStartDate] = useState(initialDate);
+    const [consumptionEndDate, setConsumptionEndDate] = useState(initialDate);
     const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
     const [deferredPrompt, setDeferredPrompt] = useState<any>(null);

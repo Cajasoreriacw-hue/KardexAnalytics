@@ -214,16 +214,25 @@ export async function POST(request: NextRequest) {
 
         console.log(`[Gamasoft] ✅ ${conMovimiento.length} artículos con movimiento de ${resultados.length} consultados`);
 
+        if (resultados.length === 0) {
+            return NextResponse.json({ 
+                error: "No se obtuvieron datos de Gamasoft. Verifica que las credenciales (Email/Pass) estén configuradas en Cloudflare y que el servidor de Gamasoft esté respondiendo.",
+                code: "CONN_ERROR" 
+            }, { status: 500 });
+        }
+
         return NextResponse.json({
             success: true,
             fecha: targetDate,
-            totalArticulos: resultados.length,
-            articulosConMovimiento: conMovimiento.length,
-            data: conMovimiento,
+            totalArticulos: ARTICULOS_CITY_U.length,
+            articulosConMovimiento: resultados.length,
+            data: resultados
         });
-    } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : "Error desconocido";
-        console.error("[Gamasoft] ❌ Error:", message);
-        return NextResponse.json({ error: message }, { status: 500 });
+    } catch (error: any) {
+        console.error("Gamasoft Sync Error:", error);
+        return NextResponse.json({ 
+            error: error.message || "Error interno en la sincronización con Gamasoft",
+            details: "Si esto ocurre en la nube y no en local, es un bloqueo de SSL o faltan Variables de Entorno en Cloudflare."
+        }, { status: 500 });
     }
 }

@@ -1,6 +1,7 @@
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 import { NextRequest, NextResponse } from "next/server";
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 // =====================================================
 // GAMASOFT API PROXY — City U Kardex Integration

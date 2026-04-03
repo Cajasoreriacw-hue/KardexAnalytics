@@ -165,10 +165,20 @@ export async function POST(request: NextRequest) {
         const { targetDate } = body;
 
         if (!targetDate) {
-            return NextResponse.json({ error: "targetDate es requerido" }, { status: 400 });
+            return NextResponse.json({ error: "Falta targetDate en el body" }, { status: 400 });
         }
 
-        console.log(`[Gamasoft Sync] 📅 Fecha: ${targetDate}`);
+        const email = process.env.GAMASOFT_EMAIL;
+        const pass = process.env.GAMASOFT_PASSWORD;
+
+        if (!email || !pass) {
+            return NextResponse.json({ 
+                error: "⚠️ VARIABLES DE ENTORNO FALTANTES EN VERCEL",
+                details: "Asegúrate de que GAMASOFT_EMAIL y GAMASOFT_PASSWORD estén en Settings > Environment Variables en el panel de Vercel."
+            }, { status: 500 });
+        }
+
+        console.log(`[Vercel Sync] Intentando sincronización para ${targetDate}...`);
 
         const token = await getGamasoftToken();
         console.log("[Gamasoft] ✅ Token obtenido");

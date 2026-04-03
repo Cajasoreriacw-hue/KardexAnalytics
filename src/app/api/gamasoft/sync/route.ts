@@ -11,7 +11,7 @@ export const runtime = 'edge';
 //   3. Devolver el consolidado de cantidadSalidas
 // =====================================================
 
-const GAMASOFT_BASE = "https://gd3.gamasoftcol.com:8443/backgama/ptigGama";
+const GAMASOFT_BASE = "https://www.gamasoftcol.com/backgama/ptigGama";
 
 // Catálogo de artículos de City U (extraído del console.log de Gamasoft)
 const ARTICULOS_CITY_U = [

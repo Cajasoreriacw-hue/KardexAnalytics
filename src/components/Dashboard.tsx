@@ -192,6 +192,8 @@ const mockTrendData = [
 ];
 
 
+
+// Mantenemos persistencia de estados vía localStorage y sessionStorage para evitar parpadeos
 export default function Dashboard() {
     const consumptionHistoryMock = [
         { name: 'Sem 1', proteina: 400, bebidas: 240, secos: 300 },
@@ -201,7 +203,47 @@ export default function Dashboard() {
     ];
     const [sessionUser, setSessionUser] = useState<any>(null);
     const [role, setRole] = useState<Role>("CASHIER");
-    const [view, setView] = useState<View>("DASHBOARD");
+    const [view, setViewInternal] = useState<View>(() => {
+        if (typeof window !== 'undefined') {
+            const hash = window.location.hash.replace('#', '').toUpperCase() as View;
+            const validViews: View[] = ["DASHBOARD", "REQUISITIONS", "TRANSFERS", "CATALOG", "CONSUMPTION", "SEDES", "USERS", "RECIPES", "PURCHASES", "CLOSURE", "WASTE", "WASTE_HISTORY"];
+            if (hash && validViews.includes(hash)) return hash;
+            return (localStorage.getItem('kardex_active_view') as View) || "DASHBOARD";
+        }
+        return "DASHBOARD";
+    });
+    
+    // Función para cambiar de vista con persistencia en Hash y localStorage
+    const setView = (newView: View) => {
+        setViewInternal(newView);
+        localStorage.setItem('kardex_active_view', newView);
+        if (typeof window !== 'undefined') {
+            window.location.hash = newView.toLowerCase();
+        }
+    };
+
+    // Escuchar cambios manuales en el Hash (Botones atrás/adelante del navegador)
+    useEffect(() => {
+        const handleHashChange = () => {
+            const hash = window.location.hash.replace('#', '').toUpperCase() as View;
+            const validViews: View[] = ["DASHBOARD", "REQUISITIONS", "TRANSFERS", "CATALOG", "CONSUMPTION", "SEDES", "USERS", "RECIPES", "PURCHASES", "CLOSURE", "WASTE", "WASTE_HISTORY"];
+            if (hash && validViews.includes(hash)) {
+                setViewInternal(hash);
+            }
+        };
+        window.addEventListener('hashchange', handleHashChange);
+        return () => window.removeEventListener('hashchange', handleHashChange);
+    }, []);
+
+    const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+    const [isLoading, setIsLoading] = useState(false);
+    // Si tenemos una sesión persistida, NO mostrar Login mientras verificamos
+    const [isAuthChecked, setIsAuthChecked] = useState(() => {
+        if (typeof window !== 'undefined') {
+            return !sessionStorage.getItem('kardex_session_lock'); // true = ya verificado (no hay sesión)
+        }
+        return false; // SSR: aún no verificado
+    });
     const [fileHover, setFileHover] = useState(false);
 
     // Estados para manejo de Inventario (Iniciamos vacíos para usar Supabase)
@@ -252,7 +294,6 @@ export default function Dashboard() {
     const [consumptionStartDate, setConsumptionStartDate] = useState(initialDate);
     const [consumptionEndDate, setConsumptionEndDate] = useState(initialDate);
     const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-    const [isLoading, setIsLoading] = useState(true);
     const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
     const [isOnline, setIsOnline] = useState(true);
     const [notifications, setNotifications] = useState<NotificationData[]>([]);
@@ -329,84 +370,160 @@ export default function Dashboard() {
         }
     };
 
-    // Carga de Sesión y Datos Iniciales
-    useEffect(() => {
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/sw.js').catch(err => console.log('SW registration failed:', err));
-        }
+    // Función global para cargar todos los datos de la App
+    const loadAppData = async (session: any, showLoading = true) => {
+        if (!session) return;
+        if (showLoading) setIsLoading(true);
+        try {
+            console.log("🕵️ STEPS: 1. Iniciando carga de perfil...");
+            // 1. Perfil y Rol (Simplificado para evitar bloqueos)
+            const { data: profile, error: profileError } = await supabase
+                .from('profiles')
+                .select('*')
+                .eq('id', session.user.id)
+                .single();
 
-        const initializeApp = async () => {
-            // No forzamos setIsLoading(true) aquí para evitar que el cambio de fecha "parpadee" o ponga la pantalla blanca.
-            // Como setIsLoading ya empieza en true por defecto (línea 135), solo mostrará loader en la carga inicial real de la página.
-            try {
-                // 1. Verificar Sesión y Perfil
-                const { data: { session } } = await supabase.auth.getSession();
-                if (!session) {
-                    setIsLoading(false);
-                    return;
-                }
+            console.log("🕵️ STEPS: 2. Perfil recibido:", profile ? "OK" : "NULL", profileError || "");
+            if (profileError) throw profileError;
+            if (!profile) {
+                notify("No se encontró perfil para este usuario.", "error");
+                setIsLoading(false);
+                return;
+            }
 
-                const { data: profile, error: profileError } = await supabase
-                    .from('profiles')
-                    .select('*, sedes(nombre)')
-                    .eq('id', session.user.id)
-                    .single();
+            setSessionUser({ ...session.user, profile });
+            const userRole = profile.rol as Role;
+            setRole(userRole);
 
-                if (profileError) throw profileError;
-                if (!profile) throw new Error("No se encontró perfil de usuario.");
+            console.log("🕵️ STEPS: 3. Cargando sedes...");
+            // 2. Cargar Sedes
+            const { data: sedesData } = await supabase.from('sedes').select('*');
+            console.log("🕵️ STEPS: 4. Sedes cargadas:", sedesData?.length);
 
-                setSessionUser({ ...session.user, profile });
-                const userRole = profile.rol as Role;
-                setRole(userRole);
-
-                // 2. Cargar Sedes
-                const { data: sedesData, error: sedesError } = await supabase.from('sedes').select('*');
-                if (sedesError) throw sedesError;
-
-                if (sedesData) {
-                    if (userRole === 'CASHIER' && profile.sede_id) {
-                        const cajeroSede = sedesData.find(s => s.id === profile.sede_id);
-                        if (cajeroSede) {
-                            setSedes([{ id: cajeroSede.id, nombre: cajeroSede.nombre, ubicacion: cajeroSede.ubicacion, prefijo: cajeroSede.prefijo }]);
-                            setActiveSucursal(cajeroSede.nombre);
-                        }
-                    } else {
-                        setSedes(sedesData.map(s => ({ id: s.id, nombre: s.nombre, ubicacion: s.ubicacion, prefijo: s.prefijo })));
+            if (sedesData) {
+                if (userRole === 'CASHIER' && profile.sede_id) {
+                    const cajeroSede = sedesData.find(s => s.id === profile.sede_id);
+                    if (cajeroSede) {
+                        setSedes([{ id: cajeroSede.id, nombre: cajeroSede.nombre, ubicacion: cajeroSede.ubicacion, prefijo: cajeroSede.prefijo }]);
+                        setActiveSucursal(cajeroSede.nombre);
                     }
+                } else {
+                    setSedes(sedesData.map(s => ({ id: s.id, nombre: s.nombre, ubicacion: s.ubicacion, prefijo: s.prefijo })));
                 }
+            }
 
-                // 3. Cargar Catálogo de Productos
-                const { data: productsData, error: prodError } = await supabase.from('products').select('*');
-                if (prodError) throw prodError;
-                if (productsData) {
-                    setCatalog(productsData.map(p => ({
-                        id: p.id,
-                        nombre: p.nombre,
-                        unidad: p.unidad,
-                        costoPorUnidad: Number(p.costo_unitario)
-                    })));
+            console.log("🕵️ STEPS: 5. Cargando catálogo...");
+            // 3. Cargar Catálogo
+            const { data: productsData } = await supabase.from('products').select('*');
+            console.log("🕵️ STEPS: 6. Catálogo cargado:", productsData?.length);
+            
+            if (productsData) {
+                setCatalog(productsData.map(p => ({
+                    id: p.id,
+                    nombre: p.nombre,
+                    unidad: p.unidad,
+                    costoPorUnidad: Number(p.costo_unitario)
+                })));
+            }
+
+            console.log("🕵️ STEPS: 7. Cargando inventario diario...");
+            // 4. Inventario Diario
+            const { data: inventoryDataRaw } = await supabase
+                .from('inventory_daily')
+                .select('*, products(nombre, unidad)')
+                .eq('fecha', selectedDate);
+
+            if (inventoryDataRaw) {
+                const formatted = inventoryDataRaw.map(item => {
+                    const mermas = Number(item.mermas) || 0;
+                    const teorico = (item.inicial + (item.entradas || 0) - (item.salidas_ventas || 0) - mermas);
+                    return {
+                        id: item.id,
+                        articulo: item.products?.nombre || 'Desconocido',
+                        inicial: item.inicial,
+                        entradas: item.entradas,
+                        salidaVentas: item.salidas_ventas,
+                        mermas: mermas,
+                        teorico: teorico,
+                        fisico: item.fisico,
+                        dif: (Number(item.fisico) || 0) - teorico,
+                        estado: ((Number(item.fisico) || 0) - teorico) < 0 ? 'Fuga' : 'Ok',
+                        costo: item.costo_en_fecha,
+                        reportarPlanCero: item.reportar_plan_cero,
+                        sucursal: sedesData?.find(s => s.id === item.sede_id)?.nombre || 'Principal'
+                    };
+                });
+                setInventoryData(formatted);
+            }
+
+            console.log("🕵️ STEPS: 8. Cargando recetas...");
+            // 5. Recetas y Perfiles extra
+            const [recipesRes, ingredientsRes] = await Promise.all([
+                supabase.from('recipes').select('*'),
+                supabase.from('recipe_ingredients').select('*')
+            ]);
+            setRecipes(recipesRes.data || []);
+            setRecipeIngredients(ingredientsRes.data || []);
+
+            console.log("🕵️ STEPS: 9. Finalizado con éxito.");
+
+        } catch (err: any) {
+            console.error("🚨 ERROR CRÍTICO EN LOADAPPDATA:", err);
+            notify("Error al cargar datos: " + (err.message || "Problema de conexión"), "error");
+        } finally {
+            console.log("🕵️ STEPS: 10. Cerrando loader.");
+            setIsLoading(false);
+            setIsAuthChecked(true);
+        }
+    };
+
+    // Efecto principal reactivo a la Autenticación (Se ejecuta una sola vez)
+    useEffect(() => {
+        console.log("🖥️ Dashboard MONTADO ( Mount Cycle )");
+        /* if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js').catch(err => console.log('SW registration failed:', err));
+        } */
+
+        const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+            console.log("🔐 Auth Event:", event, "User ID:", session?.user?.id);
+            
+            if (session) {
+                // Recuperar ID persistido en la pestaña para evitar parpadeos incluso tras un Refresh real del navegador
+                const persistedSessionId = typeof window !== 'undefined' ? sessionStorage.getItem('kardex_session_lock') : null;
+                const isNewSession = session.user.id !== persistedSessionId;
+                
+                if (isNewSession || event === 'SIGNED_IN') {
+                    console.log("🚀 Nueva Sesión Detectada. Cargando datos...");
+                    if (typeof window !== 'undefined') sessionStorage.setItem('kardex_session_lock', session.user.id);
+                    loadAppData(session, false); // NO mostrar spinner, la UI ya está ahí
+                } else {
+                    // MISMA SESIÓN: cambio de pestaña, token refresh, o F5
+                    // Siempre cargamos silenciosamente para restaurar sessionUser sin mostrar spinner ni Login
+                    console.log("🔒 Sesión Confirmada. Carga silenciosa.");
+                    loadAppData(session, false);
                 }
+            } else {
+                console.log("👋 Sesión cerrada.");
+                if (typeof window !== 'undefined') sessionStorage.removeItem('kardex_session_lock');
+                setSessionUser(null);
+                setIsLoading(false);
+                setIsAuthChecked(true); // Mostrar Login
+            }
+        });
 
-                // 4. Cargar Recetas e Ingredientes
-                const [recipesRes, ingredientsRes] = await Promise.all([
-                    supabase.from('recipes').select('*'),
-                    supabase.from('recipe_ingredients').select('*')
-                ]);
-                if (recipesRes.error) throw recipesRes.error;
-                if (ingredientsRes.error) throw ingredientsRes.error;
+        return () => subscription.unsubscribe();
+    }, []); // IMPORTANTE: Solo una vez, no depender de sessionUser
 
-                setRecipes(recipesRes.data || []);
-                setRecipeIngredients(ingredientsRes.data || []);
-
-                // 5. Cargar Inventario Diario
-                const { data: inventoryDataRaw, error: invError } = await supabase
+    // Efecto reactivo al cambio de FECHA
+    useEffect(() => {
+        if (sessionUser) {
+            const refreshInv = async () => {
+                const { data } = await supabase
                     .from('inventory_daily')
                     .select('*, products(nombre, unidad)')
                     .eq('fecha', selectedDate);
-
-                if (invError) throw invError;
-                if (inventoryDataRaw) {
-                    const formatted = inventoryDataRaw.map(item => {
+                if (data) {
+                    const formatted = data.map(item => {
                         const mermas = Number(item.mermas) || 0;
                         const teorico = (item.inicial + (item.entradas || 0) - (item.salidas_ventas || 0) - mermas);
                         return {
@@ -422,54 +539,14 @@ export default function Dashboard() {
                             estado: ((Number(item.fisico) || 0) - teorico) < 0 ? 'Fuga' : 'Ok',
                             costo: item.costo_en_fecha,
                             reportarPlanCero: item.reportar_plan_cero,
-                            sucursal: sedesData?.find(s => s.id === item.sede_id)?.nombre || 'Principal'
+                            sucursal: sedes.find(s => s.id === item.sede_id)?.nombre || 'Principal'
                         };
                     });
                     setInventoryData(formatted);
                 }
-
-                // 6. Cargar Perfiles de Usuario (Para Admin)
-                if (['ADMIN', 'ANALYST'].includes(userRole)) {
-                    const { data: profilesData } = await supabase.from('profiles').select('*');
-                    if (profilesData) setAppUsers(profilesData.map(p => ({ id: p.id, nombre: p.nombre, email: p.email, rol: p.rol, sedeId: p.sede_id })));
-                }
-
-                // 7. Requisiciones y Traslados
-                const [reqsRes, transRes] = await Promise.all([
-                    supabase.from('requisitions').select('*, products(nombre), sedes(nombre)'),
-                    supabase.from('transfers').select('*, products(nombre), origen:sedes!origen_id(nombre), destino:sedes!destino_id(nombre)')
-                ]);
-
-                if (reqsRes.data) setRequisitions(reqsRes.data.map((r: any) => ({
-                    id: r.id,
-                    articulo: r.products?.nombre || 'Desconocido',
-                    cantidad: r.cantidad,
-                    sucursal: r.sedes?.nombre || 'General',
-                    status: r.status,
-                    prioridad: r.prioridad,
-                    fecha: r.fecha
-                })));
-
-                if (transRes.data) setTransfers(transRes.data.map((t: any) => ({
-                    id: t.id,
-                    articulo: t.products?.nombre || 'Desconocido',
-                    cantidad: t.cantidad,
-                    origen: t.origen?.nombre || 'Desconocido',
-                    destino: t.destino?.nombre || 'Desconocido',
-                    status: t.status,
-                    fecha: t.fecha
-                })));
-
-            } catch (err: any) {
-                console.error("Error inicializando aplicación:", err);
-                // No lanzamos alert aquí para evitar molestar en el mount si es un error menor, 
-                // pero si no hay sesión es normal.
-            } finally {
-                setIsLoading(false);
-            }
-        };
-
-        initializeApp();
+            };
+            refreshInv();
+        }
     }, [selectedDate]);
 
     useEffect(() => {
@@ -1183,7 +1260,8 @@ export default function Dashboard() {
 
 
 
-    if (!sessionUser && !isLoading) {
+    // Solo mostrar Login si: (1) no hay usuario, (2) no estamos cargando, (3) ya verificamos auth
+    if (!sessionUser && !isLoading && isAuthChecked) {
         return <Login onLogin={(user) => {
             setSessionUser(user);
             setRole(user.profile.rol as Role);
@@ -1191,6 +1269,19 @@ export default function Dashboard() {
                 setActiveSucursal(user.profile.sedes.nombre);
             }
         }} />;
+    }
+
+    // Si aún estamos verificando auth (sessionStorage dice que hay sesión), mostrar pantalla neutra
+    if (!sessionUser && !isAuthChecked) {
+        return (
+            <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+                <div className="flex flex-col items-center gap-3">
+                    <div className="size-10 rounded-xl bg-gradient-to-br from-cyan-500 to-emerald-500 flex items-center justify-center text-white shadow-lg animate-pulse">
+                        <Activity size={24} strokeWidth={2.5} />
+                    </div>
+                </div>
+            </div>
+        );
     }
 
     if (isLoading) {
@@ -2235,35 +2326,43 @@ export default function Dashboard() {
                             catalog={catalog}
                             onUpdateCatalog={async (updatedProducts) => {
                                 try {
-                                    // Identificar si lo que estamos haciendo es una adición o edición
-                                    // Para evitar enviar el catálogo completo innecesariamente y arriesgar errores de ID
-                                    // Buscamos si hay productos nuevos (con prefijo 'P')
-                                    const newProducts = updatedProducts.filter(p => String(p.id).startsWith('P'));
+                                    // PREPARACIÓN: Identificar los cambios reales para no saturar la BD
+                                    // Comparamos el catálogo actualizado contra el actual (catalog)
+                                    const itemsToUpdate = updatedProducts.filter(p => {
+                                        const original = catalog.find(old => old.id == p.id);
+                                        // Si no existe (es nuevo, prefijo P) o si algo cambió
+                                        if (!original) return true;
+                                        return (
+                                            original.nombre !== p.nombre || 
+                                            original.unidad !== p.unidad || 
+                                            original.costoPorUnidad !== p.costoPorUnidad
+                                        );
+                                    });
 
-                                    // Si hay productos nuevos, solo insertamos esos. Si es una edición, upsert de la lista (o del editado)
-                                    // Para simplificar y mantener sincronía, hacemos upsert filtrando los IDs temporales
+                                    if (itemsToUpdate.length === 0) {
+                                        notify("No se detectaron cambios reales para guardar.", "info");
+                                        return;
+                                    }
 
-                                    // Calculamos el ID más alto actual (Solo de los que son números)
+                                    // CALCULOS DE ID: (Solo para los nuevos)
                                     const maxId = catalog.reduce((max, p) => {
                                         const numericId = parseInt(String(p.id));
                                         return (!isNaN(numericId) && numericId > max) ? numericId : max;
                                     }, 0);
                                     let nextIdCount = 1;
 
-                                    const productsToUpsert = updatedProducts.map(p => {
-                                        const isTempId = String(p.id).startsWith('P');
+                                    const productsToUpsert = itemsToUpdate.map(p => {
+                                        const idStr = String(p.id);
+                                        const isTempId = idStr.startsWith('P');
                                         let finalId;
                                         
                                         if (isTempId) {
+                                            // Solo inventamos IDs nuevos para los que acabamos de crear (prefijo P)
                                             finalId = maxId + nextIdCount;
                                             nextIdCount++;
                                         } else {
-                                            finalId = parseInt(String(p.id));
-                                            if (isNaN(finalId)) {
-                                                // Si el ID original no era numérico, le asignamos uno nuevo
-                                                finalId = maxId + nextIdCount;
-                                                nextIdCount++;
-                                            }
+                                            // SI YA TIENE ID (Número o UUID), LO RESPETAMOS AL 100%
+                                            finalId = p.id;
                                         }
 
                                         return {
@@ -2274,31 +2373,66 @@ export default function Dashboard() {
                                         };
                                     });
 
-                                    console.log("Enviando a Supabase:", JSON.stringify(productsToUpsert, null, 2));
+                                    console.log("🛠️ PRODUCTOS A UPSERTAR (Lógica arreglada):", productsToUpsert);
+                                    console.log("📡 Supabase Status Check:", {
+                                        clientExists: !!supabase,
+                                        hasFrom: !!supabase.from,
+                                        url: (supabase as any).supabaseUrl
+                                    });
 
-                                    const { data, error } = await supabase
+                                    // TIMEOUT DE SEGURIDAD (5 segundos)
+                                    const timeoutPromise = new Promise((_, reject) => 
+                                        setTimeout(() => reject(new Error("TIMEOUT_SUPABASE")), 5000)
+                                    );
+
+                                    console.log("📡 Enviando petición a Supabase...");
+                                    const supabasePromise = supabase
                                         .from('products')
                                         .upsert(productsToUpsert, { onConflict: 'id' })
                                         .select();
 
+                                    // Corremos la petición o el timeout, lo que pase primero
+                                    const { data, error }: any = await Promise.race([supabasePromise, timeoutPromise]);
+                                    
+                                    console.log("📡 Respuesta recibida de Supabase:", { 
+                                        success: !!data, 
+                                        error: !!error,
+                                        count: data?.length || 0,
+                                        raw: data
+                                    });
+
                                     if (error) {
-                                        console.error("DETALLE ERROR SUPABASE:", error);
+                                        console.error("❌ ERROR ESPECÍFICO SUPABASE:", JSON.stringify(error, null, 2));
                                         throw error;
                                     }
 
-                                    if (data) {
-                                        const formatted = data.map(p => ({
-                                            id: p.id,
-                                            nombre: p.nombre,
-                                            unidad: p.unidad,
-                                            costoPorUnidad: Number(p.costo_unitario)
-                                        }));
-                                        setCatalog(formatted);
-                                        notify("✅ Catálogo actualizado", "success");
+                                    if (data && data.length > 0) {
+                                        console.log("🔄 Actualizando UI con datos de BD:", data);
+                                        
+                                        // Actualizar el estado local sin romper el orden de la lista
+                                        const updatedProduct = data[0];
+                                        setCatalog(prev => prev.map(p => 
+                                            p.id == updatedProduct.id ? {
+                                                id: updatedProduct.id,
+                                                nombre: updatedProduct.nombre,
+                                                unidad: updatedProduct.unidad,
+                                                costoPorUnidad: Number(updatedProduct.costo_unitario)
+                                            } : p
+                                        ));
+
+                                        notify(`✅ ${data.length} producto(s) guardado(s)`, "success");
+                                    } else if (data && data.length === 0) {
+                                        console.warn("⚠️ AVISO: Supabase no devolvió filas afectadas. Posible problema de RLS.");
+                                        notify("No se guardaron cambios. Verifica los permisos de esta cuenta.", "warning");
                                     }
                                 } catch (err: any) {
-                                    console.error("ERROR FINAL:", err);
-                                    notify(`Error: ${err.message || 'Error de datos'}`, "error");
+                                    if (err.message === "TIMEOUT_SUPABASE") {
+                                        console.error("🚨 LA BASE DE DATOS NO RESPONDIÓ (TIMEOUT 5s)");
+                                        notify("La base de datos no responde. Revisa tu conexión o permisos.", "error");
+                                    } else {
+                                        console.error("🚨 FALLO EN ACTUALIZACIÓN:", JSON.stringify(err, Object.getOwnPropertyNames(err), 2));
+                                        notify(`Error: ${err.message || 'Fallo en la base de datos'}`, "error");
+                                    }
                                 }
                             }}
                         />
@@ -3699,7 +3833,7 @@ function CatalogPanel({ catalog, onUpdateCatalog }: { catalog: Product[], onUpda
                                     key={item.id}
                                     product={item}
                                     onSave={(updated) => {
-                                        const newCatalog = catalog.map(p => p.id === updated.id ? updated : p);
+                                        const newCatalog = catalog.map(p => p.id == updated.id ? updated : p);
                                         onUpdateCatalog(newCatalog);
                                     }}
                                 />
@@ -3776,10 +3910,15 @@ function EditableCatalogRow({ product, onSave }: { product: Product, onSave: (p:
     const [isEditing, setIsEditing] = useState(false);
     const [editData, setEditData] = useState({ ...product });
 
+    // Sincronizar estado local si el producto cambia externamente (desde DB)
+    useEffect(() => {
+        setEditData({ ...product });
+    }, [product]);
+
     if (isEditing) {
         return (
             <tr className="bg-cyan-50/30">
-                <td className="px-8 py-4 text-xs font-mono text-slate-400">{product.id.substring(0, 8)}...</td>
+                <td className="px-8 py-4 text-xs font-mono text-slate-400">{String(product.id).substring(0, 8)}...</td>
                 <td className="px-8 py-4">
                     <input
                         type="text"

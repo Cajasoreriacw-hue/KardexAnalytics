@@ -13,7 +13,8 @@ import {
     X, Check, DollarSign, Box, MapPin, Loader2,
     ShoppingCart, ArrowRightLeft, ClipboardList, Plus, Search, Filter, MoreVertical,
     Printer, Trash2, ArrowUpRight, Sparkles, Send, MessageSquare, Bot, Cpu, Smartphone, QrCode,
-    BookOpenText, Boxes, Menu, CloudDownload, Calendar, ChevronDown, ChevronLeft, ChevronRight
+    BookOpenText, Boxes, Menu, CloudDownload, Calendar, ChevronDown, ChevronLeft, ChevronRight,
+    ArrowDownRight, ArrowDown
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import Login from "./Login";
@@ -73,9 +74,9 @@ const CustomDatePicker = ({ selectedDate, onChange }: { selectedDate: string, on
 
     return (
         <div className="relative" ref={popoverRef}>
-             <button onClick={() => setIsOpen(!isOpen)} className="flex items-center gap-2 bg-slate-50 hover:bg-slate-100 px-4 py-1.5 rounded-full border border-slate-200 transition-colors group cursor-pointer">
-                 <Calendar className="text-cyan-600 size-4 group-hover:scale-110 transition-transform"/>
-                 <span className="text-xs font-bold text-slate-700 capitalize min-w-[90px]">{displayDate}</span>
+             <button onClick={() => setIsOpen(!isOpen)} className="flex items-center gap-2 bg-transparent hover:text-slate-900 transition-colors group cursor-pointer outline-none">
+                 <Calendar className="text-cyan-600 size-[14px] group-hover:scale-110 transition-transform"/>
+                 <span className="text-xs font-bold text-slate-700 capitalize min-w-[90px] text-left">{displayDate}</span>
                  <ChevronDown size={14} className={`text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`}/>
              </button>
 
@@ -127,7 +128,7 @@ const CustomDatePicker = ({ selectedDate, onChange }: { selectedDate: string, on
 
 // Tipos de Roles en el Sistema
 type Role = "ADMIN" | "ANALYST" | "SUPERVISOR" | "CASHIER";
-type View = "DASHBOARD" | "REQUISITIONS" | "TRANSFERS" | "CATALOG" | "CONSUMPTION" | "SEDES" | "USERS" | "RECIPES" | "PURCHASES" | "CLOSURE" | "WASTE" | "WASTE_HISTORY"; // Updated View type
+type View = "DASHBOARD" | "REQUISITIONS" | "TRANSFERS" | "CATALOG" | "CONSUMPTION" | "SEDES" | "USERS" | "RECIPES" | "PURCHASES" | "CLOSURE" | "WASTE" | "WASTE_HISTORY" | "INITIAL_INVENTORY" | "PRODUCTION" | "PRODUCTION_HISTORY";
 
 interface Sede {
     id: string;
@@ -226,7 +227,7 @@ export default function Dashboard() {
     useEffect(() => {
         const handleHashChange = () => {
             const hash = window.location.hash.replace('#', '').toUpperCase() as View;
-            const validViews: View[] = ["DASHBOARD", "REQUISITIONS", "TRANSFERS", "CATALOG", "CONSUMPTION", "SEDES", "USERS", "RECIPES", "PURCHASES", "CLOSURE", "WASTE", "WASTE_HISTORY"];
+            const validViews: View[] = ["DASHBOARD", "REQUISITIONS", "TRANSFERS", "CATALOG", "CONSUMPTION", "SEDES", "USERS", "RECIPES", "PURCHASES", "CLOSURE", "WASTE", "WASTE_HISTORY", "INITIAL_INVENTORY", "PRODUCTION", "PRODUCTION_HISTORY"];
             if (hash && validViews.includes(hash)) {
                 setViewInternal(hash);
             }
@@ -237,13 +238,9 @@ export default function Dashboard() {
 
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const [isLoading, setIsLoading] = useState(false);
-    // Si tenemos una sesión persistida, NO mostrar Login mientras verificamos
-    const [isAuthChecked, setIsAuthChecked] = useState(() => {
-        if (typeof window !== 'undefined') {
-            return !sessionStorage.getItem('kardex_session_lock'); // true = ya verificado (no hay sesión)
-        }
-        return false; // SSR: aún no verificado
-    });
+    // Siempre empezamos como false para evitar hydration mismatch (servidor vs cliente)
+    // El auth listener lo pondrá en true cuando confirme que no hay sesión
+    const [isAuthChecked, setIsAuthChecked] = useState(false);
     const [fileHover, setFileHover] = useState(false);
 
     // Estados para manejo de Inventario (Iniciamos vacíos para usar Supabase)
@@ -263,6 +260,8 @@ export default function Dashboard() {
     const [recipeIngredients, setRecipeIngredients] = useState<any[]>([]);
     const [wasteHistory, setWasteHistory] = useState<any[]>([]);
     const [isFetchingHistory, setIsFetchingHistory] = useState(false);
+    const [productionsHistory, setProductionsHistory] = useState<any[]>([]);
+    const [isFetchingProductions, setIsFetchingProductions] = useState(false);
 
     const getColombiaDate = () => {
         const now = new Date();
@@ -572,6 +571,56 @@ export default function Dashboard() {
                 }
             };
             fetchWasteHistory();
+        } else if (view === "PRODUCTION_HISTORY") {
+            const fetchProductionsHistory = async () => {
+                setIsFetchingProductions(true);
+                try {
+                    const { data, error } = await supabase
+                        .from('productions')
+                        .select('*, sedes!inner(nombre), products!producto_terminado_id(nombre, unidad)')
+                        .order('created_at', { ascending: false });
+
+                    if (error) {
+                        console.warn("Error fetching productions history:", error.message);
+                        setProductionsHistory([]);
+                    } else {
+                        setProductionsHistory(data || []);
+                    }
+                } catch (err: any) {
+                    console.error("Error fetching productions history:", err);
+                } finally {
+                    setIsFetchingProductions(false);
+                }
+            };
+            fetchProductionsHistory();
+        } else if (view === "USERS") {
+            const fetchUsersList = async () => {
+                setIsLoading(true);
+                try {
+                    const { data, error } = await supabase
+                        .from('profiles')
+                        .select('*');
+                    
+                    if (error) {
+                        console.warn("Error fetching users:", error.message);
+                        setAppUsers([]);
+                    } else {
+                        const mappedUsers: UserAccount[] = data.map((p: any) => ({
+                            id: p.id,
+                            nombre: p.nombre || 'Sin nombre',
+                            email: p.email || 'Ninguno',
+                            rol: p.rol || 'CASHIER',
+                            sedeId: p.sede_id || ''
+                        }));
+                        setAppUsers(mappedUsers);
+                    }
+                } catch (err: any) {
+                    console.error("Error fetching users:", err);
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+            fetchUsersList();
         }
     }, [view]);
 
@@ -1303,174 +1352,221 @@ export default function Dashboard() {
                 />
             )}
 
-            {/* Sidebar de Navegación */}
+            {/* Sidebar de Navegación (Rediseño Moderno) */}
             <aside className={cn(
-                "fixed inset-y-0 left-0 w-64 bg-white border-r border-slate-200 flex flex-col z-[110] transition-transform duration-300 ease-in-out lg:translate-x-0 lg:static lg:h-screen lg:flex",
+                "fixed inset-y-0 left-0 w-64 bg-white flex flex-col z-[110] transition-transform duration-300 ease-in-out lg:translate-x-0 lg:static lg:h-screen lg:flex lg:w-72 lg:border-r border-slate-200",
                 isMobileMenuOpen ? "translate-x-0 shadow-2xl" : "-translate-x-full"
             )}>
-                {/* Logo Section - Fixed */}
-                <div className="p-6 flex-none">
-                    <div className="flex items-center gap-3">
-                        <div className="size-8 rounded-lg bg-gradient-to-br from-cyan-500 to-emerald-500 flex items-center justify-center text-white shadow-md">
-                            <Activity size={20} strokeWidth={2.5} />
+                {/* User Section - Movido arriba tipo flotante */}
+                <div className="p-4 pt-6 flex-none">
+                    <div className="flex items-center gap-3 p-3 rounded-2xl hover:bg-slate-50 border border-slate-100 shadow-[0_2px_10px_rgb(0,0,0,0.02)] cursor-pointer transition-colors bg-white group">
+                        <div className="size-10 rounded-xl flex items-center justify-center font-bold text-orange-800 shadow-inner overflow-hidden relative" style={{ backgroundColor: '#FAD9B8' }}>
+                            {sessionUser?.profile?.nombre?.[0] || 'U'}
+                            <div className="absolute -bottom-1 -right-1 bg-slate-900 rounded-md p-0.5 border border-white">
+                                <Sparkles size={10} className="text-white" />
+                            </div>
                         </div>
-                        <h1 className="text-xl font-bold text-slate-900 tracking-tight leading-none">Kardex <span className="text-cyan-600 font-black">Analytics</span></h1>
+                        <div className="flex-1 min-w-0">
+                            <p className="text-sm font-bold text-slate-900 leading-tight truncate capitalize">{sessionUser?.profile?.nombre || 'Usuario'}</p>
+                            <p className="text-[11px] text-slate-500 truncate">{sessionUser?.email}</p>
+                        </div>
+                        <ChevronDown size={16} className="text-slate-400 shrink-0 group-hover:text-slate-600 transition-colors" />
+                    </div>
+                </div>
+
+                {/* Buscador visual */}
+                <div className="px-5 pb-2">
+                    <div className="relative">
+                        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input 
+                            type="text" 
+                            placeholder="Buscar módulo..." 
+                            className="w-full pl-10 pr-8 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-slate-900 focus:bg-white transition-all hover:bg-slate-100" 
+                        />
+                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-black text-slate-400 bg-white border border-slate-200 px-1.5 py-0.5 rounded shadow-sm">K</span>
                     </div>
                 </div>
 
                 {/* Nav Section - Scrollable */}
-                <div className="flex-1 overflow-y-auto px-6 py-2 custom-scrollbar">
+                <div className="flex-1 overflow-y-auto px-5 py-4 custom-scrollbar">
                     <nav className="space-y-1">
+                        
                         <button
                             onClick={() => changeView("DASHBOARD")}
                             className={cn(
-                                "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
-                                view === "DASHBOARD" ? "bg-cyan-50 text-cyan-700 border border-cyan-200 shadow-sm" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
+                                "w-full flex items-center gap-3 px-3 py-3 rounded-2xl text-sm font-bold transition-all",
+                                view === "DASHBOARD" ? "bg-slate-900 text-white shadow-md" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100/60"
                             )}
                         >
-                            <Box size={18} /> Dashboard General
+                            <Box size={18} className={view === "DASHBOARD" ? "text-white" : "text-slate-400"} /> Dashboard General
                         </button>
+                        
+                        <div className="h-px border-t border-dashed border-slate-200 my-4 mx-2" />
+                        <p className="px-3 text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Operaciones</p>
+
                         <button
                             onClick={() => changeView("CLOSURE")}
                             className={cn(
-                                "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
-                                view === "CLOSURE" ? "bg-indigo-50 text-indigo-700 border border-indigo-200 shadow-sm" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
+                                "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition-all",
+                                view === "CLOSURE" ? "bg-slate-900 text-white shadow-md" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100/60"
                             )}
                         >
-                            <ClipboardList size={18} className={view === "CLOSURE" ? "text-indigo-600" : "text-slate-400"} /> Conteo Final
+                            <ClipboardList size={18} className={view === "CLOSURE" ? "text-white" : "text-slate-400"} /> Conteo Final
+                        </button>
+                        <button
+                            onClick={() => changeView("INITIAL_INVENTORY")}
+                            className={cn(
+                                "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition-all",
+                                view === "INITIAL_INVENTORY" ? "bg-slate-900 text-white shadow-md" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100/60"
+                            )}
+                        >
+                            <Boxes size={18} className={view === "INITIAL_INVENTORY" ? "text-white" : "text-slate-400"} /> Inventario Inicial
                         </button>
                         <button
                             onClick={() => changeView("PURCHASES")}
                             className={cn(
-                                "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
-                                view === "PURCHASES" ? "bg-emerald-50 text-emerald-700 border border-emerald-200 shadow-sm" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
+                                "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition-all",
+                                view === "PURCHASES" ? "bg-slate-900 text-white shadow-md" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100/60"
                             )}
                         >
-                            <Plus size={18} className="text-emerald-500" /> Cargue de Compras
-                        </button>
-                        <button
-                            onClick={() => changeView("WASTE")}
-                            className={cn(
-                                "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
-                                view === "WASTE" ? "bg-rose-50 text-rose-700 border border-rose-200 shadow-sm" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
-                            )}
-                        >
-                            <Trash2 size={18} className={view === "WASTE" ? "text-rose-600" : "text-slate-400"} /> Registro de Bajas
-                        </button>
-                        <button
-                            onClick={() => changeView("WASTE_HISTORY")}
-                            className={cn(
-                                "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
-                                view === "WASTE_HISTORY" ? "bg-slate-900 text-white shadow-lg shadow-slate-900/20" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
-                            )}
-                        >
-                            <BookOpenText size={18} className={view === "WASTE_HISTORY" ? "text-cyan-400" : "text-slate-400"} /> Historial de Bajas
+                            <Plus size={18} className={view === "PURCHASES" ? "text-white" : "text-slate-400"} /> Cargue de Compras
                         </button>
                         <button
                             onClick={() => changeView("REQUISITIONS")}
                             className={cn(
-                                "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
-                                view === "REQUISITIONS" ? "bg-cyan-50 text-cyan-700 border border-cyan-200 shadow-sm" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
+                                "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition-all",
+                                view === "REQUISITIONS" ? "bg-slate-900 text-white shadow-md" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100/60"
                             )}
                         >
-                            <ShoppingCart size={18} /> Requisiciones
+                            <ShoppingCart size={18} className={view === "REQUISITIONS" ? "text-white" : "text-slate-400"} /> Requisiciones
                         </button>
                         <button
                             onClick={() => changeView("TRANSFERS")}
                             className={cn(
-                                "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
-                                view === "TRANSFERS" ? "bg-cyan-50 text-cyan-700 border border-cyan-200 shadow-sm" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
+                                "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition-all",
+                                view === "TRANSFERS" ? "bg-slate-900 text-white shadow-md" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100/60"
                             )}
                         >
-                            <ArrowRightLeft size={18} /> Traslados
+                            <ArrowRightLeft size={18} className={view === "TRANSFERS" ? "text-white" : "text-slate-400"} /> Traslados
                         </button>
+
+                        <div className="h-px border-t border-dashed border-slate-200 my-4 mx-2" />
+                        <p className="px-3 text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Mermas y Producción</p>
+
+                        <button
+                            onClick={() => changeView("WASTE")}
+                            className={cn(
+                                "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition-all",
+                                view === "WASTE" ? "bg-slate-900 text-white shadow-md" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100/60"
+                            )}
+                        >
+                            <Trash2 size={18} className={view === "WASTE" ? "text-white" : "text-slate-400"} /> Registro de Bajas
+                        </button>
+                        <button
+                            onClick={() => changeView("WASTE_HISTORY")}
+                            className={cn(
+                                "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition-all flex justify-between group",
+                                view === "WASTE_HISTORY" ? "bg-slate-900 text-white shadow-md" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100/60"
+                            )}
+                        >
+                            <div className="flex gap-3 items-center">
+                                <BookOpenText size={18} className={view === "WASTE_HISTORY" ? "text-white" : "text-slate-400"} /> Historial de Bajas
+                            </div>
+                        </button>
+                        <button
+                            onClick={() => changeView("PRODUCTION")}
+                            className={cn(
+                                "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition-all",
+                                view === "PRODUCTION" ? "bg-slate-900 text-white shadow-md" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100/60"
+                            )}
+                        >
+                            <Cpu size={18} className={view === "PRODUCTION" ? "text-white" : "text-slate-400"} /> Registro de Producción
+                        </button>
+                        <button
+                            onClick={() => changeView("PRODUCTION_HISTORY")}
+                            className={cn(
+                                "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition-all flex justify-between group",
+                                view === "PRODUCTION_HISTORY" ? "bg-slate-900 text-white shadow-md" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100/60"
+                            )}
+                        >
+                            <div className="flex gap-3 items-center">
+                                <BookOpenText size={18} className={view === "PRODUCTION_HISTORY" ? "text-white" : "text-slate-400"} /> Historial Producc.
+                            </div>
+                        </button>
+
                         {["ADMIN", "ANALYST"].includes(role) && (
-                            <button
-                                onClick={() => changeView("CONSUMPTION")}
-                                className={cn(
-                                    "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
-                                    view === "CONSUMPTION" ? "bg-cyan-50 text-cyan-700 border border-cyan-200 shadow-sm" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
-                                )}
-                            >
-                                <TrendingUp size={18} /> Análisis de Consumo
-                            </button>
-                        )}
-                        {["ADMIN", "ANALYST"].includes(role) && (
-                            <button
-                                onClick={() => changeView("CATALOG")}
-                                className={cn(
-                                    "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
-                                    view === "CATALOG" ? "bg-cyan-50 text-cyan-700 border border-cyan-200 shadow-sm" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
-                                )}
-                            >
-                                <ClipboardList size={18} /> Catálogo Maestro
-                            </button>
-                        )}
-                        {["ADMIN", "ANALYST"].includes(role) && (
-                            <button
-                                onClick={() => changeView("RECIPES")}
-                                className={cn(
-                                    "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
-                                    view === "RECIPES" ? "bg-cyan-50 text-cyan-700 border border-cyan-200 shadow-sm" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
-                                )}
-                            >
-                                <Boxes size={18} /> Recetario (BOM)
-                            </button>
-                        )}
-                        {role === "ADMIN" && (
-                            <div className="pt-4 mt-4 border-t border-slate-100 space-y-1">
-                                <p className="px-4 text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Configuración</p>
+                            <div className="space-y-1">
+                                <div className="h-px border-t border-dashed border-slate-200 my-4 mx-2" />
+                                <p className="px-3 text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Configuración</p>
                                 <button
-                                    onClick={() => changeView("SEDES")}
+                                    onClick={() => changeView("CONSUMPTION")}
                                     className={cn(
-                                        "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
-                                        view === "SEDES" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
+                                        "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition-all",
+                                        view === "CONSUMPTION" ? "bg-slate-900 text-white shadow-md" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100/60"
                                     )}
                                 >
-                                    <MapPin size={18} /> Gestión de Sedes
+                                    <TrendingUp size={18} className={view === "CONSUMPTION" ? "text-white" : "text-slate-400"} /> Análisis de Consumo
                                 </button>
                                 <button
-                                    onClick={() => changeView("USERS")}
+                                    onClick={() => changeView("CATALOG")}
                                     className={cn(
-                                        "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
-                                        view === "USERS" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
+                                        "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition-all",
+                                        view === "CATALOG" ? "bg-slate-900 text-white shadow-md" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100/60"
                                     )}
                                 >
-                                    <Users size={18} /> Gestión de Usuarios
+                                    <ClipboardList size={18} className={view === "CATALOG" ? "text-white" : "text-slate-400"} /> Catálogo Maestro
                                 </button>
+                                <button
+                                    onClick={() => changeView("RECIPES")}
+                                    className={cn(
+                                        "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition-all",
+                                        view === "RECIPES" ? "bg-slate-900 text-white shadow-md" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100/60"
+                                    )}
+                                >
+                                    <Boxes size={18} className={view === "RECIPES" ? "text-white" : "text-slate-400"} /> Recetario (BOM)
+                                </button>
+                                {role === "ADMIN" && (
+                                    <>
+                                        <button
+                                            onClick={() => changeView("SEDES")}
+                                            className={cn(
+                                                "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition-all",
+                                                view === "SEDES" ? "bg-slate-900 text-white shadow-md" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100/60"
+                                            )}
+                                        >
+                                            <MapPin size={18} className={view === "SEDES" ? "text-white" : "text-slate-400"} /> Gestión de Sedes
+                                        </button>
+                                        <button
+                                            onClick={() => changeView("USERS")}
+                                            className={cn(
+                                                "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition-all",
+                                                view === "USERS" ? "bg-slate-900 text-white shadow-md" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100/60"
+                                            )}
+                                        >
+                                            <Users size={18} className={view === "USERS" ? "text-white" : "text-slate-400"} /> Gestión de Usuarios
+                                        </button>
+                                    </>
+                                )}
                             </div>
                         )}
                     </nav>
                 </div>
 
-                {/* User Section - Fixed */}
-                <div className="p-6 space-y-4 border-t border-slate-100 flex-none bg-white">
-                    <div className="bg-slate-100 p-4 rounded-2xl border border-slate-200">
-                        <p className="text-xs text-slate-500 font-bold uppercase tracking-wider mb-2">Usuario Activo</p>
-                        <div className="flex items-center gap-3">
-                            <div className="size-10 rounded-full bg-cyan-100 border border-cyan-200 flex items-center justify-center text-cyan-700 font-bold uppercase">
-                                {sessionUser?.profile?.nombre?.[0] || 'U'}
-                            </div>
-                            <div>
-                                <p className="text-sm font-bold text-slate-800 leading-none capitalize truncate max-w-[120px]">{sessionUser?.profile?.nombre || 'Usuario'}</p>
-                                <p className="text-[10px] text-slate-500 mt-1 font-semibold">{role}</p>
-                            </div>
-                        </div>
-                    </div>
+                {/* Footer del Navbar - Fixed */}
+                <div className="p-5 flex-none space-y-2 mt-auto">
                     <button
                         onClick={handleLogout}
-                        className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-bold text-rose-600 hover:bg-rose-50 transition-all border border-transparent hover:border-rose-200"
+                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold text-slate-500 hover:text-rose-600 hover:bg-rose-50 transition-all border border-transparent"
                     >
-                        <LogOut size={18} /> Cerrar Sesión
+                        <LogOut size={18} className="text-slate-400" /> Cerrar Sesión
                     </button>
-                    <p className="text-[10px] text-center text-slate-600 font-bold uppercase tracking-[0.2em]">v1.0.5 Premium</p>
 
                     {deferredPrompt && (
                         <button
                             onClick={handleInstallClick}
-                            className="w-full mt-2 bg-gradient-to-r from-cyan-600 to-blue-600 text-white py-3 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-cyan-500/20 active:scale-95 transition-all"
+                            className="w-full mt-2 bg-gradient-to-r from-slate-800 to-slate-900 text-white py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-md active:scale-95 transition-all"
                         >
-                            Instalar aplicación
+                            Instalar WebApp
                         </button>
                     )}
                 </div>
@@ -1478,37 +1574,49 @@ export default function Dashboard() {
 
             <div className="flex-1 flex flex-col min-w-0">
                 {/* Header Premium / Nav */}
-                <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-200 px-4 md:px-6 py-4 flex items-center justify-between">
-                    <div className="flex items-center gap-3 overflow-hidden">
-                        <button
-                            onClick={() => setIsMobileMenuOpen(true)}
-                            className="p-2 -ml-2 lg:hidden text-slate-500 hover:bg-slate-100 rounded-lg transition-colors shrink-0"
-                        >
-                            <Menu size={24} />
-                        </button>
-                        <h2 className="text-sm md:text-lg font-bold text-slate-900 capitalize truncate">
-                            {view.toLowerCase().replace('_', ' ')}
-                        </h2>
-
-                        {/* Botón de Notificaciones Nativas */}
-                        {typeof window !== 'undefined' && 'Notification' in window && Notification.permission !== 'granted' && (
+                <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-200 px-4 md:px-6 py-3 flex flex-col md:flex-row md:items-center justify-between gap-3 md:gap-0">
+                    
+                    {/* Fila Top (Mobile) / Izquierda (Desktop) */}
+                    <div className="flex items-center justify-between w-full md:w-auto">
+                        <div className="flex items-center gap-3 overflow-hidden">
                             <button
-                                onClick={requestNotificationPermission}
-                                className="group flex items-center gap-2 bg-cyan-50 hover:bg-cyan-100 px-3 py-1 rounded-full border border-cyan-200 transition-all text-cyan-700 shrink-0"
-                                title="Activar notificaciones de escritorio"
+                                onClick={() => setIsMobileMenuOpen(true)}
+                                className="p-2 -ml-2 lg:hidden text-slate-500 hover:bg-slate-100 rounded-lg transition-colors shrink-0"
                             >
-                                <MessageSquare size={12} className="group-hover:scale-110 rotate-12 transition-transform" />
-                                <span className="text-[9px] font-black uppercase tracking-tight hidden sm:block">Alertas</span>
+                                <Menu size={24} />
                             </button>
-                        )}
+                            <h2 className="text-sm md:text-lg font-bold text-slate-900 capitalize truncate">
+                                {view.toLowerCase().replace('_', ' ')}
+                            </h2>
+
+                            {/* Botón de Notificaciones Nativas */}
+                            {typeof window !== 'undefined' && 'Notification' in window && Notification.permission !== 'granted' && (
+                                <button
+                                    onClick={requestNotificationPermission}
+                                    className="group flex items-center gap-2 bg-cyan-50 hover:bg-cyan-100 px-3 py-1 rounded-full border border-cyan-200 transition-all text-cyan-700 shrink-0"
+                                    title="Activar notificaciones de escritorio"
+                                >
+                                    <MessageSquare size={12} className="group-hover:scale-110 rotate-12 transition-transform" />
+                                    <span className="text-[9px] font-black uppercase tracking-tight hidden sm:block">Alertas</span>
+                                </button>
+                            )}
+                        </div>
+
+                        {/* Logo GamaSoft (Solo visible aquí en móvil, oculto en desktop) */}
+                        <div className="md:hidden flex items-center gap-2 shrink-0">
+                            <div className="flex items-center justify-center size-8 rounded-xl bg-slate-900 shadow-md">
+                                <Activity size={16} className="text-cyan-400" />
+                            </div>
+                        </div>
                     </div>
 
-                    <div className="flex items-center gap-2 md:gap-4">
-                        {/* Selector de Fecha (Solo visible en md+) */}
-                        <div className="hidden md:flex items-center gap-2 bg-white px-1.5 py-1.5 rounded-full border border-slate-200 shadow-sm">
-                            <div className="flex items-center bg-transparent shrink-0">
-                                <Activity size={14} className="text-cyan-600 animate-pulse ml-3" />
-                                <span className="text-[10px] font-black text-slate-500 uppercase tracking-tighter ml-2 mr-3">Cargue Diario</span>
+                    {/* Fila Bottom (Mobile) / Derecha (Desktop) */}
+                    <div className="flex flex-wrap items-center gap-2 md:gap-3 w-full md:w-auto">
+                        {/* Selector de Fecha */}
+                        <div className="flex items-center gap-2 bg-white pl-3 pr-2 py-1.5 rounded-full border border-slate-200 shadow-sm shrink-0 h-9">
+                            <div className="hidden sm:flex items-center bg-transparent shrink-0">
+                                <Activity size={14} className="text-cyan-600 animate-pulse" />
+                                <span className="text-[10px] font-black text-slate-500 uppercase tracking-tighter mx-2">Cargue Diario</span>
                             </div>
                             <CustomDatePicker 
                                 selectedDate={selectedDate} 
@@ -1516,39 +1624,42 @@ export default function Dashboard() {
                             />
                         </div>
 
-                        {/* Filtro de Sucursal (Solo visible en md+ o si no es Cajero) */}
+                        {/* Filtro de Sucursal */}
                         {sucursalesDisponibles.length > 0 && role !== "CASHIER" && (
-                            <div className="hidden md:flex items-center gap-2 bg-white px-3 py-1.5 rounded-full border border-slate-200 shadow-sm">
-                                <MapPin size={16} className="text-cyan-600" />
-                                <select
-                                    className="bg-transparent text-sm text-slate-700 font-medium focus:outline-none focus:ring-0 border-none appearance-none cursor-pointer pr-4"
-                                    value={activeSucursal}
-                                    onChange={(e) => setActiveSucursal(e.target.value)}
-                                >
-                                    <option value="Todas" className="bg-white">Todas las Sucursales</option>
-                                    {sucursalesDisponibles.map(sucursal => (
-                                        <option key={sucursal} value={sucursal} className="bg-white">{sucursal}</option>
-                                    ))}
-                                </select>
+                            <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-full border border-slate-200 shadow-sm shrink-0 h-9">
+                                <MapPin size={14} className="text-cyan-600 hidden sm:block" />
+                                <div className="relative flex items-center">
+                                    <select
+                                        className="bg-transparent text-xs text-slate-700 font-bold focus:outline-none focus:ring-0 border-none appearance-none cursor-pointer pr-5"
+                                        value={activeSucursal}
+                                        onChange={(e) => setActiveSucursal(e.target.value)}
+                                    >
+                                        <option value="Todas" className="bg-white">Todas las Sedes</option>
+                                        {sucursalesDisponibles.map(sucursal => (
+                                            <option key={sucursal} value={sucursal} className="bg-white">{sucursal}</option>
+                                        ))}
+                                    </select>
+                                    <ChevronDown size={14} className="text-slate-400 absolute right-0 pointer-events-none" />
+                                </div>
                             </div>
                         )}
 
                         {/* Indicador de Conexión */}
                         {!isOnline && (
-                            <div className="flex items-center gap-2 bg-rose-100 px-3 py-1 rounded-full border border-rose-200 animate-pulse">
+                            <div className="flex items-center gap-1 sm:gap-2 bg-rose-100 px-3 py-1.5 rounded-full border border-rose-200 animate-pulse shrink-0">
                                 <AlertTriangle size={14} className="text-rose-600" />
-                                <span className="text-[10px] font-black text-rose-700 uppercase">Sin Conexión</span>
+                                <span className="text-[9px] sm:text-[10px] font-black text-rose-700 uppercase leading-none mt-0.5">Sin Conexión</span>
                             </div>
                         )}
 
-                        {/* Perfil de Usuario Actual */}
-                        <div className="flex items-center gap-2 md:gap-3 md:pl-4 md:border-l md:border-slate-200 shrink-0">
-                            <div className="text-right hidden sm:block">
-                                <p className="text-xs font-black text-slate-800 uppercase tracking-tight truncate max-w-[80px]">{sessionUser?.profile?.nombre || 'Iniciado'}</p>
-                                <p className="text-[9px] font-bold text-cyan-600 uppercase">{role}</p>
+                        {/* Logo GamaSoft (Solo visible en desktop) */}
+                        <div className="hidden md:flex items-center gap-3 pl-4 border-l border-slate-200 shrink-0">
+                            <div className="text-right">
+                                <p className="text-xs font-black text-slate-800 uppercase tracking-tight">Gamasoft</p>
+                                <p className="text-[9px] font-bold text-cyan-600 uppercase tracking-widest">Analytics</p>
                             </div>
-                            <div className="size-8 md:size-10 rounded-xl md:rounded-2xl bg-gradient-to-tr from-cyan-500 to-blue-500 flex items-center justify-center text-white text-xs md:text-sm font-black shadow-md shadow-cyan-500/20">
-                                {sessionUser?.profile?.nombre?.[0] || 'U'}
+                            <div className="size-10 rounded-2xl bg-slate-900 flex items-center justify-center shadow-lg shadow-slate-900/20">
+                                <Activity size={20} className="text-cyan-400" />
                             </div>
                         </div>
                     </div>
@@ -1661,6 +1772,157 @@ export default function Dashboard() {
                                     }
                                 }}
                             />
+                        </div>
+                    )}
+                    {view === "INITIAL_INVENTORY" && (
+                        <div className="max-w-4xl mx-auto">
+                            <InitialInventoryPanel
+                                catalog={catalog}
+                                currentInventory={inventoryData.filter(d => d.sucursal === activeSucursal)}
+                                sedeName={activeSucursal}
+                                selectedDate={selectedDate}
+                                onSave={async (items) => {
+                                    setIsLoading(true);
+                                    try {
+                                        const sedeId = sedes.find(s => s.nombre === activeSucursal)?.id;
+                                        if (!sedeId) throw new Error("Selecciona una sede válida.");
+
+                                        for (const item of items) {
+                                            const { error } = await supabase
+                                                .from('inventory_daily')
+                                                .upsert({
+                                                    sede_id: sedeId,
+                                                    product_id: item.id,
+                                                    fecha: selectedDate,
+                                                    inicial: item.inicial,
+                                                    costo_en_fecha: item.costoPorUnidad,
+                                                    entradas: 0,
+                                                    salidas_ventas: 0,
+                                                    mermas: 0,
+                                                    fisico: 0,
+                                                }, { onConflict: 'sede_id, product_id, fecha' });
+
+                                            if (error) throw error;
+                                        }
+
+                                        notify(`Inventario inicial guardado para ${activeSucursal}`, "success");
+
+                                        // Refrescar datos silenciosamente
+                                        const session = (await supabase.auth.getSession()).data.session;
+                                        if (session) loadAppData(session, false);
+
+                                    } catch (err: any) {
+                                        console.error(err);
+                                        notify("Error: " + err.message, "error");
+                                    } finally {
+                                        setIsLoading(false);
+                                    }
+                                }}
+                            />
+                        </div>
+                    )}
+                    {view === "PRODUCTION" && (
+                        <div className="max-w-6xl mx-auto">
+                            <ProductionPanel
+                                catalog={catalog}
+                                recipes={recipes}
+                                sedeName={activeSucursal}
+                                selectedDate={selectedDate}
+                                onSave={async (productionData: any) => {
+                                    setIsLoading(true);
+                                    try {
+                                        const sedeId = sedes.find(s => s.nombre === activeSucursal)?.id;
+                                        if (!sedeId) throw new Error("Selecciona una sede válida.");
+                                        const sessionData = (await supabase.auth.getSession()).data.session;
+                                        const user = sessionData?.user;
+
+                                        // 1. Guardar en tabla productions
+                                        const { error: prodError } = await supabase.from('productions').insert({
+                                            sede_id: sedeId,
+                                            recipe_id: productionData.recipe.id,
+                                            recipe_name: productionData.recipe.nombre,
+                                            producto_terminado_id: productionData.producto_terminado.id,
+                                            producto_terminado_nombre: productionData.producto_terminado.nombre,
+                                            fecha: selectedDate,
+                                            cantidad_producida: productionData.cantidad,
+                                            merma_produccion: productionData.merma,
+                                            notas: productionData.notas || null,
+                                            responsable_id: user?.id,
+                                            responsable_nombre: "CASHIER"
+                                        });
+
+                                        if (prodError) throw prodError;
+
+                                        // 2. Traer ingredientes de la receta
+                                        const { data: recipeIng } = await supabase
+                                            .from('recipe_ingredients')
+                                            .select('*')
+                                            .eq('recipe_id', productionData.recipe.id);
+
+                                        // 3. Descontar ingredientes
+                                        if (recipeIng) {
+                                            for (const ing of recipeIng) {
+                                                const totalIngQty = ing.cantidad * productionData.cantidad;
+                                                
+                                                const { data: existingIng } = await supabase
+                                                    .from('inventory_daily')
+                                                    .select('id, salidas_ventas')
+                                                    .eq('sede_id', sedeId)
+                                                    .eq('product_id', ing.product_id)
+                                                    .eq('fecha', selectedDate)
+                                                    .maybeSingle();
+
+                                                const payload: any = {
+                                                    sede_id: sedeId,
+                                                    product_id: ing.product_id,
+                                                    fecha: selectedDate,
+                                                    salidas_ventas: (existingIng?.salidas_ventas || 0) + totalIngQty
+                                                };
+
+                                                if (existingIng) payload.id = existingIng.id;
+
+                                                await supabase.from('inventory_daily').upsert(payload, { onConflict: 'sede_id, product_id, fecha' });
+                                            }
+                                        }
+
+                                        // 4. Sumar producto terminado y procesar merma (sobre el producto terminado o insumos)
+                                        // Aquí la merma se asigna al producto terminado. Si requieres otra lógica avísame.
+                                        const { data: existingProdObj } = await supabase
+                                            .from('inventory_daily')
+                                            .select('id, entradas, mermas')
+                                            .eq('sede_id', sedeId)
+                                            .eq('product_id', productionData.producto_terminado.id)
+                                            .eq('fecha', selectedDate)
+                                            .maybeSingle();
+
+                                        const ptPayload: any = {
+                                            sede_id: sedeId,
+                                            product_id: productionData.producto_terminado.id,
+                                            fecha: selectedDate,
+                                            entradas: (existingProdObj?.entradas || 0) + productionData.cantidad,
+                                            mermas: (existingProdObj?.mermas || 0) + productionData.merma
+                                        };
+
+                                        if (existingProdObj) ptPayload.id = existingProdObj.id;
+
+                                        await supabase.from('inventory_daily').upsert(ptPayload, { onConflict: 'sede_id, product_id, fecha' });
+
+                                        notify("Producción registrada y descontada correctamente", "success");
+                                        
+                                        if (sessionData) loadAppData(sessionData, false);
+                                    } catch (err: any) {
+                                        console.error(err);
+                                        notify("Error: " + err.message, "error");
+                                    } finally {
+                                        setIsLoading(false);
+                                    }
+                                }}
+                            />
+                        </div>
+                    )}
+                    {view === "PRODUCTION_HISTORY" && (
+                        <div className="max-w-6xl mx-auto">
+                            <ProductionHistoryPanel history={productionsHistory} isLoading={isFetchingProductions} />
                         </div>
                     )}
                     {view === "PURCHASES" && (
@@ -3044,6 +3306,464 @@ function ClosurePanel({ catalog, currentInventory, onSave }: { catalog: Product[
                                     </td>
                                 </tr>
                             ))}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+interface InitialInventoryItem {
+    id: string;
+    nombre: string;
+    unidad: string;
+    costoPorUnidad: number;
+    inicial: number;
+}
+
+function InitialInventoryPanel({ catalog, currentInventory, sedeName, selectedDate, onSave }: {
+    catalog: Product[],
+    currentInventory: any[],
+    sedeName: string,
+    selectedDate: string,
+    onSave: (items: InitialInventoryItem[]) => void
+}) {
+    const [searchTerm, setSearchTerm] = useState("");
+    const [quantities, setQuantities] = useState<Record<string, number>>({});
+
+    const hasExistingInitial = currentInventory.some(item => item.inicial > 0);
+
+    useEffect(() => {
+        const initial: Record<string, number> = {};
+        (currentInventory || []).forEach(item => {
+            const prod = catalog.find(p => p.nombre === item.articulo);
+            if (prod && item.inicial > 0) {
+                initial[prod.id] = item.inicial;
+            }
+        });
+        setQuantities(initial);
+    }, [currentInventory, catalog]);
+
+    const filteredProducts = (catalog || []).filter(p =>
+        p.nombre.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+
+    const updateQty = (id: string, val: string) => {
+        const num = parseFloat(val);
+        setQuantities(prev => ({ ...prev, [id]: isNaN(num) ? 0 : num }));
+    };
+
+    const filledCount = Object.values(quantities).filter(v => v > 0).length;
+
+    const handleSave = () => {
+        const items: InitialInventoryItem[] = Object.entries(quantities)
+            .filter(([_, qty]) => qty > 0)
+            .map(([id, qty]) => {
+                const prod = catalog.find(p => p.id === id)!;
+                return {
+                    id: prod.id,
+                    nombre: prod.nombre,
+                    unidad: prod.unidad,
+                    costoPorUnidad: prod.costoPorUnidad,
+                    inicial: qty
+                };
+            });
+
+        if (items.length === 0) {
+            alert("No has ingresado cantidades para ningún producto.");
+            return;
+        }
+        onSave(items);
+    };
+
+    return (
+        <div className="space-y-6">
+            <div className="bg-gradient-to-br from-amber-500 to-orange-600 p-8 rounded-[2rem] text-white shadow-xl">
+                <h2 className="text-3xl font-black tracking-tight mb-2">Inventario Inicial</h2>
+                <p className="text-amber-50/80 font-medium">
+                    Establece el stock de apertura de <span className="font-black text-white">{sedeName}</span> para el <span className="font-black text-white">{selectedDate}</span>.
+                </p>
+                <p className="text-amber-50/60 text-sm mt-1">Este proceso normalmente se ejecuta una sola vez para arrancar la operación de la sede.</p>
+            </div>
+
+            {hasExistingInitial && (
+                <div className="bg-amber-50 border-2 border-amber-200 rounded-2xl p-5 flex items-start gap-4">
+                    <AlertTriangle className="text-amber-600 size-6 flex-none mt-0.5" />
+                    <div>
+                        <p className="font-black text-amber-800 text-sm">Esta sede ya tiene inventario inicial cargado para esta fecha.</p>
+                        <p className="text-amber-700/70 text-xs mt-1">Si guardas de nuevo, se sobreescribirán los valores existentes. Solo hazlo si necesitas corregir datos.</p>
+                    </div>
+                </div>
+            )}
+
+            <div className="bg-white rounded-[2rem] border border-slate-200 shadow-xl overflow-hidden flex flex-col">
+                <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div className="relative flex-1 max-w-md">
+                        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                        <input
+                            type="text"
+                            placeholder="Buscar producto..."
+                            className="w-full bg-white border border-slate-200 rounded-xl py-3 pl-12 pr-4 text-sm font-bold focus:ring-4 focus:ring-amber-500/10 focus:border-amber-500 transition-all"
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                        />
+                    </div>
+                    <div className="flex items-center gap-4">
+                        <span className="text-xs font-bold text-slate-500">
+                            {filledCount} / {catalog.length} productos
+                        </span>
+                        <button
+                            onClick={handleSave}
+                            className="bg-amber-600 hover:bg-amber-700 text-white px-8 py-3 rounded-xl font-black text-sm transition-all shadow-lg shadow-amber-600/20 flex items-center gap-2 cursor-pointer"
+                        >
+                            <CheckCircle2 size={18} /> GUARDAR INICIAL
+                        </button>
+                    </div>
+                </div>
+
+                <div className="max-h-[600px] overflow-y-auto">
+                    <table className="w-full text-left">
+                        <thead className="sticky top-0 z-10 bg-slate-50 uppercase text-[10px] font-black text-slate-500 tracking-widest border-b border-slate-100">
+                            <tr>
+                                <th className="px-8 py-4">Producto</th>
+                                <th className="px-8 py-4 text-center">Unidad</th>
+                                <th className="px-8 py-4 text-center">Costo Unit.</th>
+                                <th className="px-8 py-4 text-center w-40">Cantidad Inicial</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-50">
+                            {filteredProducts.map(product => (
+                                <tr key={product.id} className="hover:bg-slate-50/50 transition-colors">
+                                    <td className="px-8 py-5">
+                                        <p className="font-bold text-slate-800">{product.nombre}</p>
+                                    </td>
+                                    <td className="px-8 py-5 text-center">
+                                        <span className="bg-slate-100 text-slate-500 px-2 py-1 rounded text-[10px] font-black">{product.unidad}</span>
+                                    </td>
+                                    <td className="px-8 py-5 text-center">
+                                        <span className="text-sm font-bold text-slate-600">${product.costoPorUnidad.toLocaleString()}</span>
+                                    </td>
+                                    <td className="px-8 py-5">
+                                        <input
+                                            type="number"
+                                            step="0.01"
+                                            className="w-full bg-white border-2 border-slate-200 rounded-xl py-3 text-center text-lg font-black text-amber-700 focus:border-amber-500 focus:ring-4 focus:ring-amber-500/10 transition-all"
+                                            placeholder="0"
+                                            value={quantities[product.id] === 0 ? "0" : quantities[product.id] || ""}
+                                            onChange={(e) => updateQty(product.id, e.target.value)}
+                                        />
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function ProductionPanel({ catalog, recipes, sedeName, selectedDate, onSave }: any) {
+    const [selectedRecipeId, setSelectedRecipeId] = useState("");
+    const [selectedProductId, setSelectedProductId] = useState("");
+    const [cantidad, setCantidad] = useState("1");
+    const [merma, setMerma] = useState("0");
+    const [notas, setNotas] = useState("");
+
+    const activeRecipe = recipes.find((r: any) => r.id === selectedRecipeId);
+    const activeProduct = catalog.find((p: any) => p.id === selectedProductId);
+
+    const [recipeIngredients, setRecipeIngredients] = useState<any[]>([]);
+
+    useEffect(() => {
+        if (selectedRecipeId) {
+            // Cargar ingredientes de la receta
+            const fetchIngredients = async () => {
+                const { data } = await supabase
+                    .from('recipe_ingredients')
+                    .select('*, products(nombre, unidad)')
+                    .eq('recipe_id', selectedRecipeId);
+                setRecipeIngredients(data || []);
+            };
+            fetchIngredients();
+        } else {
+            setRecipeIngredients([]);
+        }
+    }, [selectedRecipeId]);
+
+    const handleSave = () => {
+        if (!activeRecipe || !activeProduct) {
+            alert("Selecciona la receta a producir y el producto terminado resultante.");
+            return;
+        }
+
+        const qty = parseFloat(cantidad);
+        if (isNaN(qty) || qty <= 0) {
+            alert("La cantidad producida debe ser mayor a 0.");
+            return;
+        }
+
+        const m = parseFloat(merma) || 0;
+
+        onSave({
+            recipe: activeRecipe,
+            producto_terminado: activeProduct,
+            cantidad: qty,
+            merma: m,
+            notas
+        });
+
+        // Reset form
+        setSelectedRecipeId("");
+        setSelectedProductId("");
+        setCantidad("1");
+        setMerma("0");
+        setNotas("");
+    };
+
+    return (
+        <div className="space-y-6">
+            <div className="bg-gradient-to-br from-sky-500 to-cyan-600 p-8 rounded-[2rem] text-white shadow-xl">
+                <h2 className="text-3xl font-black tracking-tight mb-2">Registro de Producción</h2>
+                <p className="text-sky-50 font-medium">Transforma insumos en productos terminados en la sede <span className="font-black text-white">{sedeName}</span>.</p>
+                <p className="text-sky-100 text-sm mt-1">Este proceso descontará automáticamente la materia prima del kardex y sumará el producto final.</p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Columna Izquierda: Entradas y Configuración */}
+                <div className="bg-white rounded-[2rem] border border-slate-200 shadow-xl p-6 flex flex-col gap-5">
+                    <div>
+                        <label className="text-xs font-black text-slate-500 uppercase tracking-wider mb-2 block">1. Seleccionar Receta Externa (Lo que se procesa)</label>
+                        <select 
+                            value={selectedRecipeId}
+                            onChange={e => setSelectedRecipeId(e.target.value)}
+                            className="w-full bg-slate-50 border-2 border-slate-200 rounded-xl py-3 px-4 text-sm font-bold text-slate-700 focus:outline-none focus:border-cyan-500 focus:ring-4 focus:ring-cyan-500/10 transition-all"
+                        >
+                            <option value="">Seleccione una receta...</option>
+                            {recipes.map((r: any) => (
+                                <option key={r.id} value={r.id}>{r.nombre}</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <div>
+                        <label className="text-xs font-black text-slate-500 uppercase tracking-wider mb-2 block">2. Producto Terminado (Lo que entra a inventario)</label>
+                        <select 
+                            value={selectedProductId}
+                            onChange={e => setSelectedProductId(e.target.value)}
+                            className="w-full bg-slate-50 border-2 border-slate-200 rounded-xl py-3 px-4 text-sm font-bold text-slate-700 focus:outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 transition-all"
+                        >
+                            <option value="">Seleccione el producto terminado...</option>
+                            {catalog.map((p: any) => (
+                                <option key={p.id} value={p.id}>{p.nombre} ({p.unidad})</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="text-xs font-black text-slate-500 uppercase tracking-wider mb-2 block">3. Cantidad Producida</label>
+                            <div className="relative">
+                                <input 
+                                    type="number" 
+                                    step="0.01"
+                                    value={cantidad}
+                                    onChange={e => setCantidad(e.target.value)}
+                                    className="w-full bg-slate-50 border-2 border-slate-200 rounded-xl py-3 pl-4 pr-12 text-sm font-black text-cyan-700 focus:outline-none focus:border-cyan-500 focus:ring-4 focus:ring-cyan-500/10 transition-all"
+                                />
+                                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 uppercase">
+                                    {activeProduct?.unidad || "UND"}
+                                </span>
+                            </div>
+                        </div>
+                        <div>
+                            <label className="text-xs font-black text-slate-500 uppercase tracking-wider mb-2 block">Merma Registrada (Opcional)</label>
+                            <input 
+                                type="number" 
+                                step="0.01"
+                                value={merma}
+                                onChange={e => setMerma(e.target.value)}
+                                className="w-full bg-slate-50 border-2 border-slate-200 rounded-xl py-3 px-4 text-sm font-black text-rose-500 focus:outline-none focus:border-rose-500 focus:ring-4 focus:ring-rose-500/10 transition-all"
+                            />
+                        </div>
+                    </div>
+
+                    <div>
+                        <label className="text-xs font-black text-slate-500 uppercase tracking-wider mb-2 block">Notas</label>
+                        <textarea 
+                            value={notas}
+                            onChange={e => setNotas(e.target.value)}
+                            placeholder="Ej: Pollo un poco pequeño, merma alta..."
+                            className="w-full bg-slate-50 border-2 border-slate-200 rounded-xl py-3 px-4 text-sm focus:outline-none focus:border-cyan-500 transition-all min-h-[80px]"
+                        ></textarea>
+                    </div>
+
+                    <button 
+                        onClick={handleSave}
+                        className="mt-2 w-full bg-cyan-600 hover:bg-cyan-700 text-white rounded-xl py-4 font-black shadow-lg shadow-cyan-600/30 flex items-center justify-center gap-2 transition-all cursor-pointer"
+                    >
+                        <Cpu size={20} /> REGISTRAR PRODUCCIÓN
+                    </button>
+                </div>
+
+                {/* Columna Derecha: Resumen de Impacto */}
+                <div className="bg-slate-50 rounded-[2rem] border border-slate-200 p-6 flex flex-col items-center justify-center relative overflow-hidden">
+                    <div className="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-rose-500 via-cyan-500 to-emerald-500"></div>
+                    
+                    {!activeRecipe || !activeProduct ? (
+                        <div className="text-center opacity-50">
+                            <ArrowRightLeft size={48} className="mx-auto mb-4 text-slate-400" />
+                            <p className="font-bold text-slate-600">Completa la información</p>
+                            <p className="text-sm text-slate-500">Para ver el impacto en el inventario</p>
+                        </div>
+                    ) : (
+                        <div className="w-full space-y-6">
+                            <h3 className="text-center font-black text-slate-800 uppercase tracking-wider text-sm">Resumen de Movimientos</h3>
+                            
+                            <div className="bg-white rounded-2xl p-4 border border-rose-100 shadow-sm">
+                                <p className="text-[10px] font-black text-rose-500 uppercase tracking-wider flex items-center gap-1 mb-3"><ArrowDownRight size={12}/> Saldrá del Inventario</p>
+                                <div className="space-y-2 max-h-[150px] overflow-y-auto pr-2 custom-scrollbar">
+                                    {recipeIngredients.length === 0 ? (
+                                        <p className="text-xs text-slate-400 italic">No hay ingredientes en esta receta.</p>
+                                    ) : (
+                                        recipeIngredients.map(ing => (
+                                            <div key={ing.id} className="flex items-center justify-between text-sm border-b border-slate-50 pb-2">
+                                                <span className="font-bold text-slate-700">{ing.products?.nombre}</span>
+                                                <span className="font-black text-rose-600 bg-rose-50 px-2 py-1 rounded">
+                                                    -{(ing.cantidad * (parseFloat(cantidad) || 0)).toFixed(2)} {ing.products?.unidad}
+                                                </span>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+                            </div>
+
+                            <div className="bg-white rounded-2xl p-4 border border-emerald-100 shadow-sm relative">
+                                <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-white rounded-full p-1 border border-slate-200">
+                                    <ArrowDown size={14} className="text-slate-400" />
+                                </div>
+                                <p className="text-[10px] font-black text-emerald-500 uppercase tracking-wider flex items-center gap-1 mb-3 mt-1"><ArrowUpRight size={12}/> Entrará al Inventario</p>
+                                <div className="flex items-center justify-between text-sm">
+                                    <span className="font-bold text-slate-700 text-lg">{activeProduct.nombre}</span>
+                                    <span className="font-black text-emerald-600 text-lg bg-emerald-50 px-3 py-1 rounded-lg">
+                                        +{parseFloat(cantidad) || 0} {activeProduct.unidad}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function ProductionHistoryPanel({ history, isLoading }: { history: any[], isLoading: boolean }) {
+    const [searchTerm, setSearchTerm] = useState("");
+    
+    const filteredHistory = history.filter(h => 
+        h.recipe_name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+        h.producto_terminado_nombre.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        h.sedes?.nombre.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+
+    if (isLoading) {
+        return (
+            <div className="flex flex-col items-center justify-center h-64 bg-white rounded-[2rem] shadow-xl">
+                <Loader2 className="animate-spin size-12 text-cyan-600 mb-4" />
+                <p className="text-slate-500 font-medium">Cargando historial...</p>
+            </div>
+        );
+    }
+
+    return (
+        <div className="space-y-6">
+            <div className="bg-white border border-slate-200 rounded-[2.5rem] p-10 shadow-sm flex flex-col md:flex-row justify-between items-center gap-6">
+                <div>
+                    <h2 className="text-3xl font-black text-slate-900 tracking-tight">Historial de Producciones</h2>
+                    <p className="text-slate-500 font-bold mt-1 uppercase text-[10px] tracking-widest">Registro histórico de transformaciones de inventario.</p>
+                </div>
+                <div className="flex gap-4">
+                    <div className="bg-cyan-50 border border-cyan-100 px-6 py-3 rounded-2xl text-center shadow-sm">
+                        <p className="text-[10px] font-black text-cyan-400 uppercase">Total Entradas</p>
+                        <p className="text-2xl font-black text-cyan-600">{history.length}</p>
+                    </div>
+                </div>
+            </div>
+
+            <div className="bg-white rounded-[2rem] border border-slate-200 shadow-xl overflow-hidden">
+                <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex gap-4">
+                    <div className="relative flex-1 max-w-md">
+                        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                        <input
+                            type="text"
+                            placeholder="Buscar receta, producto o sede..."
+                            className="w-full bg-white border border-slate-200 rounded-xl py-3 pl-12 pr-4 text-sm font-bold focus:ring-4 focus:ring-cyan-500/10 focus:border-cyan-500 transition-all"
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                        />
+                    </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                    <table className="w-full text-left">
+                        <thead className="bg-slate-50 uppercase text-[10px] font-black text-slate-500 tracking-widest border-b border-slate-100">
+                            <tr>
+                                <th className="px-6 py-4">Fecha</th>
+                                <th className="px-6 py-4">Sede</th>
+                                <th className="px-6 py-4">Receta Origen</th>
+                                <th className="px-6 py-4">Prod. Terminado</th>
+                                <th className="px-6 py-4 text-center">Cantidad</th>
+                                <th className="px-6 py-4 text-center">Merma</th>
+                                <th className="px-6 py-4">Responsable</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                            {filteredHistory.length === 0 ? (
+                                <tr>
+                                    <td colSpan={7} className="px-6 py-12 text-center text-slate-500">
+                                        No se encontraron registros de producción.
+                                    </td>
+                                </tr>
+                            ) : (
+                                filteredHistory.map(row => (
+                                    <tr key={row.id} className="hover:bg-slate-50/50 transition-colors">
+                                        <td className="px-6 py-4 whitespace-nowrap">
+                                            <p className="font-bold text-slate-800">{new Date(row.fecha).toLocaleDateString()}</p>
+                                        </td>
+                                        <td className="px-6 py-4">
+                                            <span className="bg-slate-100 text-slate-600 px-3 py-1 rounded-lg text-xs font-black">
+                                                {row.sedes?.nombre}
+                                            </span>
+                                        </td>
+                                        <td className="px-6 py-4">
+                                            <p className="font-bold text-slate-800">{row.recipe_name}</p>
+                                        </td>
+                                        <td className="px-6 py-4">
+                                            <span className="font-bold text-emerald-600">{row.producto_terminado_nombre}</span>
+                                        </td>
+                                        <td className="px-6 py-4 text-center">
+                                            <span className="font-black text-slate-800 text-lg bg-emerald-50 px-2 py-1 rounded">
+                                                +{row.cantidad_producida} <span className="text-[10px] uppercase text-emerald-600">{row.products?.unidad}</span>
+                                            </span>
+                                        </td>
+                                        <td className="px-6 py-4 text-center">
+                                            {row.merma_produccion > 0 ? (
+                                                <span className="font-bold text-rose-500 bg-rose-50 px-2 py-1 rounded text-sm">
+                                                    {row.merma_produccion}
+                                                </span>
+                                            ) : (
+                                                <span className="text-slate-300">-</span>
+                                            )}
+                                        </td>
+                                        <td className="px-6 py-4">
+                                            <p className="text-sm font-bold text-slate-700">{row.responsable_nombre}</p>
+                                            <p className="text-xs text-slate-400 truncate max-w-[150px]">{row.notas}</p>
+                                        </td>
+                                    </tr>
+                                ))
+                            )}
                         </tbody>
                     </table>
                 </div>

@@ -245,6 +245,7 @@ export default function Dashboard() {
 
     // Estados para manejo de Inventario (Iniciamos vacíos para usar Supabase)
     const [inventoryData, setInventoryData] = useState<any[]>([]);
+    const loadingRef = useRef(false); // Evitar cargas concurrentes que causen parpadeos o pérdida de estado
     const [previewData, setPreviewData] = useState<any[] | null>(null);
     const [detectedSucursal, setDetectedSucursal] = useState<string>("Principal");
     const [activeSucursal, setActiveSucursal] = useState<string>("Todas");
@@ -371,7 +372,8 @@ export default function Dashboard() {
 
     // Función global para cargar todos los datos de la App
     const loadAppData = async (session: any, showLoading = true) => {
-        if (!session) return;
+        if (!session || loadingRef.current) return;
+        loadingRef.current = true;
         if (showLoading) setIsLoading(true);
         try {
             console.log("🕵️ STEPS: 1. Iniciando carga de perfil...");
@@ -425,54 +427,23 @@ export default function Dashboard() {
                 })));
             }
 
-            console.log("🕵️ STEPS: 7. Cargando inventario diario...");
-            // 4. Inventario Diario
-            const { data: inventoryDataRaw } = await supabase
-                .from('inventory_daily')
-                .select('*, products(nombre, unidad)')
-                .eq('fecha', selectedDate);
-
-            if (inventoryDataRaw) {
-                const formatted = inventoryDataRaw.map(item => {
-                    const mermas = Number(item.mermas) || 0;
-                    const teorico = (item.inicial + (item.entradas || 0) - (item.salidas_ventas || 0) - mermas);
-                    return {
-                        id: item.id,
-                        articulo: item.products?.nombre || 'Desconocido',
-                        inicial: item.inicial,
-                        entradas: item.entradas,
-                        salidaVentas: item.salidas_ventas,
-                        mermas: mermas,
-                        teorico: teorico,
-                        fisico: item.fisico,
-                        dif: (Number(item.fisico) || 0) - teorico,
-                        estado: ((Number(item.fisico) || 0) - teorico) < 0 ? 'Fuga' : 'Ok',
-                        costo: item.costo_en_fecha,
-                        reportarPlanCero: item.reportar_plan_cero,
-                        sucursal: sedesData?.find(s => s.id === item.sede_id)?.nombre || 'Principal'
-                    };
-                });
-                setInventoryData(formatted);
-            }
-
-            console.log("🕵️ STEPS: 8. Cargando recetas...");
-            // 5. Recetas y Perfiles extra
-            const [recipesRes, ingredientsRes] = await Promise.all([
-                supabase.from('recipes').select('*'),
-                supabase.from('recipe_ingredients').select('*')
-            ]);
-            setRecipes(recipesRes.data || []);
-            setRecipeIngredients(ingredientsRes.data || []);
-
-            console.log("🕵️ STEPS: 9. Finalizado con éxito.");
+            console.log("🕵️ STEPS: 7. Carga de infraestructura base completa.");
 
         } catch (err: any) {
-            console.error("🚨 ERROR CRÍTICO EN LOADAPPDATA:", err);
+            console.error("🚨 ERROR CRÍTICO EN LOADAPPDATA. Detalles:", {
+                message: err.message,
+                code: err.code,
+                details: err.details,
+                hint: err.hint,
+                stack: err.stack,
+                full: err
+            });
             notify("Error al cargar datos: " + (err.message || "Problema de conexión"), "error");
         } finally {
-            console.log("🕵️ STEPS: 10. Cerrando loader.");
+            console.log("🕵️ STEPS: 9. Finalizado con éxito.");
             setIsLoading(false);
             setIsAuthChecked(true);
+            loadingRef.current = false;
         }
     };
 
@@ -515,7 +486,7 @@ export default function Dashboard() {
 
     // Efecto reactivo al cambio de FECHA
     useEffect(() => {
-        if (sessionUser) {
+        if (sessionUser && sedes.length > 0) {
             const refreshInv = async () => {
                 const { data } = await supabase
                     .from('inventory_daily')
@@ -538,6 +509,7 @@ export default function Dashboard() {
                             estado: ((Number(item.fisico) || 0) - teorico) < 0 ? 'Fuga' : 'Ok',
                             costo: item.costo_en_fecha,
                             reportarPlanCero: item.reportar_plan_cero,
+                            unidad: item.products?.unidad || 'UND',
                             sucursal: sedes.find(s => s.id === item.sede_id)?.nombre || 'Principal'
                         };
                     });
@@ -546,7 +518,22 @@ export default function Dashboard() {
             };
             refreshInv();
         }
-    }, [selectedDate]);
+    }, [selectedDate, sessionUser?.id, sedes.length]);
+
+    // Efecto para Recetas y Catálogo (Estático)
+    useEffect(() => {
+        if (sessionUser) {
+            const fetchExtras = async () => {
+                const [recipesRes, ingredientsRes] = await Promise.all([
+                    supabase.from('recipes').select('*'),
+                    supabase.from('recipe_ingredients').select('*')
+                ]);
+                setRecipes(recipesRes.data || []);
+                setRecipeIngredients(ingredientsRes.data || []);
+            };
+            fetchExtras();
+        }
+    }, [sessionUser?.id]);
 
     useEffect(() => {
         if (view === "WASTE_HISTORY") {
@@ -665,7 +652,7 @@ export default function Dashboard() {
                                 cantidad: Math.abs(shortage.dif)
                             }
                         };
-                        response = `¡Entendido! Voy a crear un traslado de ${Math.abs(shortage.dif)} unidades de ${prodMatch.nombre} desde ${surplus.sucursal} hacia ${shortage.sucursal} para balancear el stock. ¿Procedo?`;
+                        response = `¡Entendido! Voy a crear un traslado de ${Math.abs(shortage.dif)} ${prodMatch.unidad || 'unidades'} de ${prodMatch.nombre} desde ${surplus.sucursal} hacia ${shortage.sucursal} para balancear el stock. ¿Procedo?`;
                     } else {
                         response = `Veo que quieres mover ${prodMatch.nombre}, pero no tengo datos claros de excedentes y faltantes entre sedes para este producto ahora mismo. ¿Podrías indicarme el origen y destino?`;
                     }
@@ -1191,7 +1178,15 @@ export default function Dashboard() {
                 }
                 const newDif = fisicoNum - item.teorico;
                 const newEstado = newDif < 0 ? "Fuga" : newDif > 0 ? "Ahorro" : "Ok";
-                return { ...item, fisico: newValue === "" ? "" : fisicoNum, dif: newDif, estado: newEstado };
+                // Automatización: Si hay diferencia, marcar para reporte automáticamente
+                const shouldReport = newEstado !== "Ok";
+                return { 
+                    ...item, 
+                    fisico: newValue === "" ? "" : fisicoNum, 
+                    dif: newDif, 
+                    estado: newEstado,
+                    reportarPlanCero: shouldReport 
+                };
             }
             return item;
         }));
@@ -1207,7 +1202,16 @@ export default function Dashboard() {
                 const newTeorico = (item.inicial + entradasNum - item.salidaVentas - (Number(item.mermas) || 0));
                 const newDif = (Number(item.fisico) || 0) - newTeorico;
                 const newEstado = newDif < 0 ? "Fuga" : newDif > 0 ? "Ahorro" : "Ok";
-                return { ...item, entradas: newValue === "" ? "" : entradasNum, teorico: newTeorico, dif: newDif, estado: newEstado };
+                // Automatización: Si hay diferencia, marcar para reporte automáticamente
+                const shouldReport = newEstado !== "Ok";
+                return { 
+                    ...item, 
+                    entradas: newValue === "" ? "" : entradasNum, 
+                    teorico: newTeorico, 
+                    dif: newDif, 
+                    estado: newEstado,
+                    reportarPlanCero: shouldReport
+                };
             }
             return item;
         }));
@@ -1223,7 +1227,16 @@ export default function Dashboard() {
                 const newTeorico = (item.inicial + (Number(item.entradas) || 0) - item.salidaVentas - mermasNum);
                 const newDif = (Number(item.fisico) || 0) - newTeorico;
                 const newEstado = newDif < 0 ? "Fuga" : newDif > 0 ? "Ahorro" : "Ok";
-                return { ...item, mermas: newValue === "" ? "" : mermasNum, teorico: newTeorico, dif: newDif, estado: newEstado };
+                // Automatización: Si hay diferencia, marcar para reporte automáticamente
+                const shouldReport = newEstado !== "Ok";
+                return { 
+                    ...item, 
+                    mermas: newValue === "" ? "" : mermasNum, 
+                    teorico: newTeorico, 
+                    dif: newDif, 
+                    estado: newEstado,
+                    reportarPlanCero: shouldReport
+                };
             }
             return item;
         }));
@@ -2566,6 +2579,7 @@ export default function Dashboard() {
                                                 estado: (item.fisico - (item.inicial + item.entradas - item.salidas_ventas)) < 0 ? 'Fuga' : 'Ok',
                                                 costo: item.costo_en_fecha,
                                                 reportarPlanCero: item.reportar_plan_cero,
+                                                unidad: prod?.unidad || 'UND',
                                                 sucursal: detectedSucursal
                                             };
                                         });
@@ -3151,7 +3165,7 @@ function NewRequisitionModal({ isOpen, onClose, inventoryData, catalog, activeSu
                                             <ArrowRightLeft size={10} /> DISPONIBLE PARA TRASLADO
                                         </p>
                                         <p className="text-[9px] text-emerald-400/70">
-                                            {inventoryData.filter((item: any) => item.articulo.toLowerCase().includes(formData.articulo.toLowerCase()) && item.sucursal !== sucursalTarget && item.dif > 0).map((i: any) => `${i.sucursal} tiene ${i.dif} und de sobra`).join(', ')}
+                                            {inventoryData.filter((item: any) => item.articulo.toLowerCase().includes(formData.articulo.toLowerCase()) && item.sucursal !== sucursalTarget && item.dif > 0).map((i: any) => `${i.sucursal} tiene ${i.dif} ${i.unidad || 'und'} de sobra`).join(', ')}
                                         </p>
                                     </div>
                                 )}
@@ -3812,7 +3826,7 @@ function CashierVisualReport({ inventoryData }: { inventoryData: any[] }) {
                     </div>
                     <div>
                         <h2 className={cn("text-3xl font-black tracking-tight", totalFugas > 0 ? "text-rose-900" : "text-emerald-900")}>
-                            {totalFugas > 0 ? `🚨 ¡Atención! Faltan ${totalFugas} unidades` : "✅ Cuadre Perfecto"}
+                            {totalFugas > 0 ? `🚨 ¡Atención! Faltantes en ${data.filter(r => r.fugaUnits > 0).length} ítems` : "✅ Cuadre Perfecto"}
                         </h2>
                         <p className={cn("text-base font-bold mt-1 opacity-60", totalFugas > 0 ? "text-rose-700" : "text-emerald-700")}>
                             Resultados comparativos del sistema vs Conteo Físico
@@ -3899,12 +3913,12 @@ function CashierVisualReport({ inventoryData }: { inventoryData: any[] }) {
                                 {hasLoss ? (
                                     <div className="bg-rose-50 text-rose-700 p-4 rounded-2xl border border-rose-100 text-sm font-bold flex gap-3">
                                         <AlertTriangle size={20} className="shrink-0 text-rose-600 mt-0.5" />
-                                        <span>Faltan <b>{item.fugaUnits}</b> unidades (${item.costoLoss.toLocaleString('es-CO')}).</span>
+                                        <span>Faltan <b>{item.fugaUnits}</b> {item.unidad} (${item.costoLoss.toLocaleString('es-CO')}).</span>
                                     </div>
                                 ) : hasGain ? (
                                     <div className="bg-emerald-50 text-emerald-700 p-4 rounded-2xl border border-emerald-100 text-sm font-bold flex gap-3">
                                         <TrendingUp size={20} className="shrink-0 text-emerald-600 mt-0.5" />
-                                        <span>Tienes <b>{Math.abs(item.fugaUnits)}</b> unidades extra.</span>
+                                        <span>Tienes <b>{Math.abs(item.fugaUnits)}</b> {item.unidad} extra.</span>
                                     </div>
                                 ) : (
                                     <div className="bg-slate-50 text-slate-600 p-4 rounded-2xl border border-slate-100 text-sm font-bold flex gap-3 justify-center">
@@ -4098,7 +4112,7 @@ function ConsumptionPanel({ inventoryData, activeSucursal, period, setPeriod, on
                             <div key={product.id} className="relative">
                                 <div className="flex justify-between items-end mb-2">
                                     <span className="text-sm font-bold text-slate-900">{product.articulo}</span>
-                                    <span className="text-xs font-black text-emerald-600">{product.salidaVentas} UND</span>
+                                    <span className="text-xs font-black text-emerald-600">{product.salidaVentas} {product.unidad || 'UND'}</span>
                                 </div>
                                 <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
                                     <div

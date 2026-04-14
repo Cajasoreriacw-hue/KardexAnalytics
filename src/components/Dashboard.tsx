@@ -128,7 +128,7 @@ const CustomDatePicker = ({ selectedDate, onChange }: { selectedDate: string, on
 
 // Tipos de Roles en el Sistema
 type Role = "ADMIN" | "ANALYST" | "SUPERVISOR" | "CASHIER";
-type View = "DASHBOARD" | "REQUISITIONS" | "TRANSFERS" | "CATALOG" | "CONSUMPTION" | "SEDES" | "USERS" | "RECIPES" | "PURCHASES" | "CLOSURE" | "WASTE" | "WASTE_HISTORY" | "INITIAL_INVENTORY" | "PRODUCTION" | "PRODUCTION_HISTORY" | "CORRECTIONS";
+type View = "DASHBOARD" | "REQUISITIONS" | "TRANSFERS" | "CATALOG" | "CONSUMPTION" | "SEDES" | "USERS" | "RECIPES" | "PURCHASES" | "PURCHASES_HISTORY" | "CLOSURE" | "WASTE" | "WASTE_HISTORY" | "INITIAL_INVENTORY" | "PRODUCTION" | "PRODUCTION_HISTORY" | "CORRECTIONS";
 
 interface Sede {
     id: string;
@@ -207,7 +207,7 @@ export default function Dashboard() {
     const [view, setViewInternal] = useState<View>(() => {
         if (typeof window !== 'undefined') {
             const hash = window.location.hash.replace('#', '').toUpperCase() as View;
-            const validViews: View[] = ["DASHBOARD", "REQUISITIONS", "TRANSFERS", "CATALOG", "CONSUMPTION", "SEDES", "USERS", "RECIPES", "PURCHASES", "CLOSURE", "WASTE", "WASTE_HISTORY", "CORRECTIONS"];
+            const validViews: View[] = ["DASHBOARD", "REQUISITIONS", "TRANSFERS", "CATALOG", "CONSUMPTION", "SEDES", "USERS", "RECIPES", "PURCHASES", "PURCHASES_HISTORY", "CLOSURE", "WASTE", "WASTE_HISTORY", "CORRECTIONS"];
             if (hash && validViews.includes(hash)) return hash;
             return (localStorage.getItem('kardex_active_view') as View) || "DASHBOARD";
         }
@@ -227,7 +227,7 @@ export default function Dashboard() {
     useEffect(() => {
         const handleHashChange = () => {
             const hash = window.location.hash.replace('#', '').toUpperCase() as View;
-            const validViews: View[] = ["DASHBOARD", "REQUISITIONS", "TRANSFERS", "CATALOG", "CONSUMPTION", "SEDES", "USERS", "RECIPES", "PURCHASES", "CLOSURE", "WASTE", "WASTE_HISTORY", "INITIAL_INVENTORY", "PRODUCTION", "PRODUCTION_HISTORY", "CORRECTIONS"];
+            const validViews: View[] = ["DASHBOARD", "REQUISITIONS", "TRANSFERS", "CATALOG", "CONSUMPTION", "SEDES", "USERS", "RECIPES", "PURCHASES", "PURCHASES_HISTORY", "CLOSURE", "WASTE", "WASTE_HISTORY", "INITIAL_INVENTORY", "PRODUCTION", "PRODUCTION_HISTORY", "CORRECTIONS"];
             if (hash && validViews.includes(hash)) {
                 setViewInternal(hash);
             }
@@ -263,6 +263,8 @@ export default function Dashboard() {
     const [isFetchingHistory, setIsFetchingHistory] = useState(false);
     const [productionsHistory, setProductionsHistory] = useState<any[]>([]);
     const [isFetchingProductions, setIsFetchingProductions] = useState(false);
+    const [purchasesHistory, setPurchasesHistory] = useState<any[]>([]);
+    const [isFetchingPurchases, setIsFetchingPurchases] = useState(false);
 
     const getColombiaDate = () => {
         const now = new Date();
@@ -626,6 +628,28 @@ export default function Dashboard() {
                 }
             };
             fetchCorrections();
+        } else if (view === "PURCHASES_HISTORY") {
+            const fetchPurchasesHistory = async () => {
+                setIsFetchingPurchases(true);
+                try {
+                    const { data, error } = await supabase
+                        .from('purchase_registries')
+                        .select('*, products(nombre, unidad), sedes(nombre)')
+                        .order('created_at', { ascending: false });
+
+                    if (error) {
+                        console.warn("Error fetching purchases history:", error.message);
+                        setPurchasesHistory([]);
+                    } else {
+                        setPurchasesHistory(data || []);
+                    }
+                } catch (err: any) {
+                    console.error("Error fetching purchases history:", err);
+                } finally {
+                    setIsFetchingPurchases(false);
+                }
+            };
+            fetchPurchasesHistory();
         }
     }, [view, role]);
 
@@ -1538,6 +1562,15 @@ export default function Dashboard() {
                             <Plus size={18} className={view === "PURCHASES" ? "text-white" : "text-slate-400"} /> Cargue de Compras
                         </button>
                         <button
+                            onClick={() => changeView("PURCHASES_HISTORY")}
+                            className={cn(
+                                "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition-all",
+                                view === "PURCHASES_HISTORY" ? "bg-slate-900 text-white shadow-md" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100/60"
+                            )}
+                        >
+                            <BookOpenText size={18} className={view === "PURCHASES_HISTORY" ? "text-white" : "text-slate-400"} /> Historial de Entradas
+                        </button>
+                        <button
                             onClick={() => changeView("REQUISITIONS")}
                             className={cn(
                                 "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition-all",
@@ -2044,11 +2077,23 @@ export default function Dashboard() {
                                         if (!sedeId) throw new Error("No se identificó la sede activa.");
 
                                         // Preparar los datos para el upsert en inventory_daily
-                                        // Para cada entrada, necesitamos ver si ya existe el registro hoy para sumarle o crear uno nuevo
                                         for (const entry of entries) {
-                                            // Buscamos si ya existe el registro en el estado local de inventoryData
-                                            const existing = inventoryData.find(d => d.articulo === entry.nombre && d.sucursal === activeSucursal);
+                                            // 1. Log histórico en purchase_registries
+                                            const { error: logError } = await supabase
+                                                .from('purchase_registries')
+                                                .insert([{
+                                                    product_id: entry.id,
+                                                    sede_id: sedeId,
+                                                    fecha: selectedDate,
+                                                    cantidad: entry.cantidad,
+                                                    costo_unitario: entry.costoPorUnidad
+                                                }]);
+                                            
+                                            if (logError) {
+                                                console.warn("No se pudo guardar el log de compra (¿Falta tabla purchase_registries?):", logError.message);
+                                            }
 
+                                            // 2. Actualizar inventory_daily
                                             const { data: existingDB } = await supabase
                                                 .from('inventory_daily')
                                                 .select('id, entradas, inicial, mermas, salidas_ventas')
@@ -2068,7 +2113,6 @@ export default function Dashboard() {
                                             if (existingDB) {
                                                 payload.id = existingDB.id;
                                             } else {
-                                                // Si es nuevo hoy, el inicial es 0 o el fisico de ayer (lógica de arrastre iría aquí)
                                                 payload.inicial = 0;
                                                 payload.mermas = 0;
                                                 payload.salidas_ventas = 0;
@@ -2082,8 +2126,9 @@ export default function Dashboard() {
                                             if (upsertError) throw upsertError;
                                         }
 
-                                        // Refrescar datos
-                                        window.location.reload(); // Forma rápida de asegurar integridad, o podrías re-fetch
+                                        notify("Entradas guardadas y registradas en el historial.", "success");
+                                        if (sessionUser) loadAppData(sessionUser, false);
+                                        setView("PURCHASES_HISTORY");
                                     } catch (err: any) {
                                         console.error("Error guardando compras:", err);
                                         notify("Error al guardar entradas: " + err.message, "error");
@@ -2092,6 +2137,11 @@ export default function Dashboard() {
                                     }
                                 }}
                             />
+                        </div>
+                    )}
+                    {view === "PURCHASES_HISTORY" && (
+                        <div className="max-w-6xl mx-auto">
+                            <PurchasesHistoryPanel history={purchasesHistory} isLoading={isFetchingPurchases} inventoryData={inventoryData} />
                         </div>
                     )}
                     {(view === "DASHBOARD" || view === "CORRECTIONS") && (
@@ -5268,11 +5318,11 @@ function PurchasesPanel({ catalog, onSaveEntries }: { catalog: Product[], onSave
     };
 
     const updateQuantity = (id: string, qty: number) => {
-        if (qty <= 0) {
-            setSelectedEntries(selectedEntries.filter(e => e.id !== id));
-        } else {
-            setSelectedEntries(selectedEntries.map(e => e.id === id ? { ...e, cantidad: qty } : e));
-        }
+        setSelectedEntries(selectedEntries.map(e => e.id === id ? { ...e, cantidad: qty } : e));
+    };
+
+    const removeEntry = (id: string) => {
+        setSelectedEntries(selectedEntries.filter(e => e.id !== id));
     };
 
     const totalCost = selectedEntries.reduce((acc, curr) => acc + (curr.cantidad * curr.costoPorUnidad), 0);
@@ -5346,7 +5396,7 @@ function PurchasesPanel({ catalog, onSaveEntries }: { catalog: Product[], onSave
                                             onChange={(e) => updateQuantity(entry.id, Number(e.target.value))}
                                         />
                                         <button
-                                            onClick={() => updateQuantity(entry.id, 0)}
+                                            onClick={() => removeEntry(entry.id)}
                                             className="text-slate-300 hover:text-rose-500 transition-colors"
                                         >
                                             <Trash2 size={16} />
@@ -5902,11 +5952,11 @@ function WastePanel({ catalog, onSaveEntries }: { catalog: Product[], onSaveEntr
     };
 
     const updateQuantity = (id: string, qty: number) => {
-        if (qty <= 0) {
-            setSelectedEntries(selectedEntries.filter(e => e.id !== id));
-        } else {
-            setSelectedEntries(selectedEntries.map(e => e.id === id ? { ...e, cantidad: qty } : e));
-        }
+        setSelectedEntries(selectedEntries.map(e => e.id === id ? { ...e, cantidad: qty } : e));
+    };
+
+    const removeEntry = (id: string) => {
+        setSelectedEntries(selectedEntries.filter(e => e.id !== id));
     };
 
     const updateMotivo = (id: string, motivo: string) => {
@@ -5980,7 +6030,7 @@ function WastePanel({ catalog, onSaveEntries }: { catalog: Product[], onSaveEntr
                                             onChange={(e) => updateQuantity(entry.id, Number(e.target.value))}
                                         />
                                         <button
-                                            onClick={() => updateQuantity(entry.id, 0)}
+                                            onClick={() => removeEntry(entry.id)}
                                             className="size-8 flex items-center justify-center bg-rose-50 text-rose-400 hover:bg-rose-100 hover:text-rose-600 rounded-xl transition-all"
                                         >
                                             <X size={16} />
@@ -6094,6 +6144,132 @@ function WasteHistoryPanel({ history, isLoading }: { history: any[], isLoading: 
                                             <div>
                                                 <p className="font-black text-slate-900 text-lg">Sin registros en el historial</p>
                                                 <p className="text-sm font-medium text-slate-500">Las bajas que realices aparecerán listadas aquí.</p>
+                                            </div>
+                                        </div>
+                                    </td>
+                                </tr>
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function PurchasesHistoryPanel({ history, isLoading, inventoryData = [] }: { history: any[], isLoading: boolean, inventoryData?: any[] }) {
+    if (isLoading) {
+        return (
+            <div className="py-20 flex flex-col items-center justify-center gap-4 bg-white border border-slate-200 rounded-[2.5rem] shadow-sm">
+                <Loader2 className="size-10 text-emerald-500 animate-spin" />
+                <p className="text-sm font-bold text-slate-400 uppercase tracking-widest">Cargando Historial...</p>
+            </div>
+        );
+    }
+
+    // Lógica para detectar entradas registradas hoy que no tienen log en purchase_registries
+    const legacyEntries = inventoryData
+        .filter(item => item.entradas > 0)
+        .map(item => {
+            const historySum = history
+                .filter(h => h.products?.nombre === item.articulo && h.sedes?.nombre === item.sucursal)
+                .reduce((acc, curr) => acc + curr.cantidad, 0);
+            
+            const diff = item.entradas - historySum;
+            if (diff > 0) {
+                return {
+                    id: `legacy-${item.product_id}-${item.sucursal}`,
+                    products: { nombre: item.articulo, unidad: item.unidad },
+                    sedes: { nombre: item.sucursal },
+                    cantidad: diff,
+                    fecha: item.fecha || new Date().toISOString().split('T')[0],
+                    created_at: new Date().toISOString(),
+                    costo_unitario: item.costo,
+                    isLegacy: true
+                };
+            }
+            return null;
+        })
+        .filter(Boolean);
+
+    const fullHistory = [...history, ...legacyEntries].sort((a: any, b: any) => new Date(b.created_at || b.fecha).getTime() - new Date(a.created_at || a.fecha).getTime());
+
+    return (
+        <div className="space-y-6 animate-in fade-in duration-500">
+            <div className="bg-white border border-slate-200 rounded-[2.5rem] p-10 shadow-sm flex flex-col md:flex-row justify-between items-center gap-6">
+                <div>
+                    <h2 className="text-3xl font-black text-slate-900 tracking-tight">Historial de Entradas</h2>
+                    <p className="text-slate-500 font-bold mt-1 uppercase text-[10px] tracking-widest">Seguimiento de compras y reaprovechamientos</p>
+                </div>
+                <div className="flex gap-4">
+                    <div className="bg-emerald-50 border border-emerald-100 px-6 py-3 rounded-2xl text-center shadow-sm">
+                        <p className="text-[10px] font-black text-emerald-400 uppercase">Total Documentado</p>
+                        <p className="text-2xl font-black text-emerald-600">{history.length}</p>
+                    </div>
+                    {legacyEntries.length > 0 && (
+                        <div className="bg-amber-50 border border-amber-100 px-6 py-3 rounded-2xl text-center shadow-sm">
+                            <p className="text-[10px] font-black text-amber-400 uppercase">Previos Sin Detalle</p>
+                            <p className="text-2xl font-black text-amber-600">{legacyEntries.length}</p>
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-xl overflow-hidden">
+                <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm whitespace-nowrap">
+                        <thead className="bg-slate-50 border-b border-slate-100">
+                            <tr>
+                                <th className="px-8 py-5 font-black text-slate-400 uppercase text-[10px] tracking-widest">Producto</th>
+                                <th className="px-8 py-5 font-black text-slate-400 uppercase text-[10px] tracking-widest">Fecha</th>
+                                <th className="px-8 py-5 font-black text-slate-400 uppercase text-[10px] tracking-widest">Sede</th>
+                                <th className="px-8 py-5 font-black text-slate-400 uppercase text-[10px] tracking-widest text-right">Cantidad</th>
+                                <th className="px-8 py-5 font-black text-slate-400 uppercase text-[10px] tracking-widest">Costo Unit.</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-50">
+                            {fullHistory.map((reg: any, idx) => (
+                                <tr key={reg.id || idx} className="hover:bg-slate-50 transition-colors group">
+                                    <td className="px-8 py-5">
+                                        <div className="flex flex-col">
+                                            <span className="font-black text-slate-900">{reg.products?.nombre}</span>
+                                            <span className="text-[10px] font-bold text-slate-400 uppercase">{reg.products?.unidad}</span>
+                                        </div>
+                                    </td>
+                                    <td className="px-8 py-5">
+                                        <div className="flex flex-col">
+                                            <span className="font-bold text-slate-700">{new Date(reg.fecha).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                                            <span className="text-[10px] text-slate-400">
+                                                {reg.isLegacy ? "Saldo Previo Hoy" : new Date(reg.created_at).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}
+                                            </span>
+                                        </div>
+                                    </td>
+                                    <td className="px-8 py-5">
+                                        <span className={cn(
+                                            "px-3 py-1 rounded-lg text-xs font-black uppercase",
+                                            reg.isLegacy ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"
+                                        )}>
+                                            {reg.sedes?.nombre || 'Desconocida'}
+                                        </span>
+                                    </td>
+                                    <td className="px-8 py-5 text-right font-black text-emerald-600 text-lg">
+                                        {reg.cantidad}
+                                    </td>
+                                    <td className="px-8 py-5">
+                                        <span className="font-bold text-slate-600">${Number(reg.costo_unitario).toLocaleString()}</span>
+                                    </td>
+                                </tr>
+                            ))}
+                            {fullHistory.length === 0 && (
+                                <tr>
+                                    <td colSpan={5} className="py-24 text-center">
+                                        <div className="flex flex-col items-center gap-4 opacity-30">
+                                            <div className="size-20 rounded-full bg-slate-100 flex items-center justify-center">
+                                                <Plus size={40} className="text-slate-400" />
+                                            </div>
+                                            <div>
+                                                <p className="font-black text-slate-900 text-lg">Sin registros de entrada</p>
+                                                <p className="text-sm font-medium text-slate-500">Las compras que registres aparecerán aquí.</p>
                                             </div>
                                         </div>
                                     </td>

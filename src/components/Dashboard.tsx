@@ -128,7 +128,7 @@ const CustomDatePicker = ({ selectedDate, onChange }: { selectedDate: string, on
 
 // Tipos de Roles en el Sistema
 type Role = "ADMIN" | "ANALYST" | "SUPERVISOR" | "CASHIER";
-type View = "DASHBOARD" | "REQUISITIONS" | "TRANSFERS" | "CATALOG" | "CONSUMPTION" | "SEDES" | "USERS" | "RECIPES" | "PURCHASES" | "CLOSURE" | "WASTE" | "WASTE_HISTORY" | "INITIAL_INVENTORY" | "PRODUCTION" | "PRODUCTION_HISTORY";
+type View = "DASHBOARD" | "REQUISITIONS" | "TRANSFERS" | "CATALOG" | "CONSUMPTION" | "SEDES" | "USERS" | "RECIPES" | "PURCHASES" | "CLOSURE" | "WASTE" | "WASTE_HISTORY" | "INITIAL_INVENTORY" | "PRODUCTION" | "PRODUCTION_HISTORY" | "CORRECTIONS";
 
 interface Sede {
     id: string;
@@ -207,7 +207,7 @@ export default function Dashboard() {
     const [view, setViewInternal] = useState<View>(() => {
         if (typeof window !== 'undefined') {
             const hash = window.location.hash.replace('#', '').toUpperCase() as View;
-            const validViews: View[] = ["DASHBOARD", "REQUISITIONS", "TRANSFERS", "CATALOG", "CONSUMPTION", "SEDES", "USERS", "RECIPES", "PURCHASES", "CLOSURE", "WASTE", "WASTE_HISTORY"];
+            const validViews: View[] = ["DASHBOARD", "REQUISITIONS", "TRANSFERS", "CATALOG", "CONSUMPTION", "SEDES", "USERS", "RECIPES", "PURCHASES", "CLOSURE", "WASTE", "WASTE_HISTORY", "CORRECTIONS"];
             if (hash && validViews.includes(hash)) return hash;
             return (localStorage.getItem('kardex_active_view') as View) || "DASHBOARD";
         }
@@ -227,7 +227,7 @@ export default function Dashboard() {
     useEffect(() => {
         const handleHashChange = () => {
             const hash = window.location.hash.replace('#', '').toUpperCase() as View;
-            const validViews: View[] = ["DASHBOARD", "REQUISITIONS", "TRANSFERS", "CATALOG", "CONSUMPTION", "SEDES", "USERS", "RECIPES", "PURCHASES", "CLOSURE", "WASTE", "WASTE_HISTORY", "INITIAL_INVENTORY", "PRODUCTION", "PRODUCTION_HISTORY"];
+            const validViews: View[] = ["DASHBOARD", "REQUISITIONS", "TRANSFERS", "CATALOG", "CONSUMPTION", "SEDES", "USERS", "RECIPES", "PURCHASES", "CLOSURE", "WASTE", "WASTE_HISTORY", "INITIAL_INVENTORY", "PRODUCTION", "PRODUCTION_HISTORY", "CORRECTIONS"];
             if (hash && validViews.includes(hash)) {
                 setViewInternal(hash);
             }
@@ -298,6 +298,7 @@ export default function Dashboard() {
     const [isOnline, setIsOnline] = useState(true);
     const [notifications, setNotifications] = useState<NotificationData[]>([]);
     const [isSyncingPirpos, setIsSyncingPirpos] = useState(false);
+    const [pendingCorrections, setPendingCorrections] = useState<any[]>([]);
 
     const requestNotificationPermission = async () => {
         if ('Notification' in window) {
@@ -510,7 +511,9 @@ export default function Dashboard() {
                             costo: item.costo_en_fecha,
                             reportarPlanCero: item.reportar_plan_cero,
                             unidad: item.products?.unidad || 'UND',
-                            sucursal: sedes.find(s => s.id === item.sede_id)?.nombre || 'Principal'
+                            sucursal: sedes.find(s => s.id === item.sede_id)?.nombre || 'Principal',
+                            sede_id: item.sede_id,
+                            product_id: item.product_id
                         };
                     });
                     setInventoryData(formatted);
@@ -608,8 +611,83 @@ export default function Dashboard() {
                 }
             };
             fetchUsersList();
+        } else if (view === "CORRECTIONS" && ["ADMIN", "ANALYST"].includes(role)) {
+            const fetchCorrections = async () => {
+                try {
+                    const { data, error } = await supabase
+                        .from('inventory_corrections')
+                        .select('*, products(nombre), sedes(nombre)')
+                        .eq('estado', 'PENDING');
+                    if (!error && data) {
+                        setPendingCorrections(data);
+                    }
+                } catch (err) {
+                    console.error("Error fetching corrections:", err);
+                }
+            };
+            fetchCorrections();
         }
-    }, [view]);
+    }, [view, role]);
+
+    const handleApproveCorrection = async (req: any) => {
+        setIsLoading(true);
+        try {
+            // Update inventory_daily physically
+            const { error: invError } = await supabase
+                .from('inventory_daily')
+                .update({ fisico: req.valor_nuevo })
+                .eq('id', req.inventory_daily_id);
+            if (invError) throw invError;
+            
+            // Mark correction as approved
+            const { error: reqError } = await supabase
+                .from('inventory_corrections')
+                .update({ estado: 'APPROVED', revisor_id: sessionUser?.id, updated_at: new Date().toISOString() })
+                .eq('id', req.id);
+            if (reqError) throw reqError;
+            
+            notify("Corrección aprobada y aplicada con éxito.", "success");
+            
+            // Remover la solicitud de la lista de pendientes
+            setPendingCorrections(prev => prev.filter(p => p.id !== req.id));
+            
+            // Actualizar inmediatamente la Matriz de Inventario en el frontend
+            setInventoryData(prev => prev.map(item => {
+                if (item.id === req.inventory_daily_id) {
+                    const nuevoDif = Number(req.valor_nuevo) - Number(item.teorico);
+                    return { 
+                        ...item, 
+                        fisico: req.valor_nuevo, 
+                        dif: nuevoDif, 
+                        estado: nuevoDif < 0 ? 'Fuga' : 'Ok' 
+                    };
+                }
+                return item;
+            }));
+        } catch (error: any) {
+            notify("Error al aprobar: " + error.message, "error");
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handleRejectCorrection = async (req: any) => {
+        setIsLoading(true);
+        try {
+            const { error: reqError } = await supabase
+                .from('inventory_corrections')
+                .update({ estado: 'REJECTED', revisor_id: sessionUser?.id, updated_at: new Date().toISOString() })
+                .eq('id', req.id);
+            if (reqError) throw reqError;
+            
+            notify("Corrección rechazada.", "success");
+            setPendingCorrections(prev => prev.filter(p => p.id !== req.id));
+        } catch (error: any) {
+            notify("Error al rechazar: " + error.message, "error");
+        } finally {
+            setIsLoading(false);
+        }
+    };
 
     const handleLogout = async () => {
         await supabase.auth.signOut();
@@ -705,8 +783,12 @@ export default function Dashboard() {
     const canUploadExcel = ["ADMIN", "ANALYST"].includes(role);
     const canViewFinancialMertics = ["ADMIN", "ANALYST"].includes(role);
     const canGenerateRequisitions = ["ADMIN", "SUPERVISOR"].includes(role);
-    // Cajeros y supervisores pueden editar el inventario físico (para contar)
-    const canEditPhysical = ["ADMIN", "SUPERVISOR", "ANALYST"].includes(role);
+    
+    // Solo se permite editar inventario final y matriz física en el día actual a menos que estemos en CORS.
+    const isToday = selectedDate === initialDate;
+    const isCorrectionsMode = view === "CORRECTIONS";
+    const canEditPhysical = ["ADMIN", "SUPERVISOR", "ANALYST"].includes(role) && (isToday || isCorrectionsMode);
+    
     const canSelectForReport = ["ADMIN", "ANALYST"].includes(role);
     const isSimpleView = role === "CASHIER";
 
@@ -1426,6 +1508,17 @@ export default function Dashboard() {
                         >
                             <ClipboardList size={18} className={view === "CLOSURE" ? "text-white" : "text-slate-400"} /> Conteo Final
                         </button>
+                        {["ADMIN", "SUPERVISOR", "ANALYST"].includes(role) && (
+                            <button
+                                onClick={() => changeView("CORRECTIONS")}
+                                className={cn(
+                                    "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition-all",
+                                    view === "CORRECTIONS" ? "bg-rose-500 text-white shadow-md" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100/60"
+                                )}
+                            >
+                                <AlertTriangle size={18} className={view === "CORRECTIONS" ? "text-white" : "text-slate-400"} /> Ajustes Históricos
+                            </button>
+                        )}
                         <button
                             onClick={() => changeView("INITIAL_INVENTORY")}
                             className={cn(
@@ -1753,6 +1846,7 @@ export default function Dashboard() {
                     {view === "CLOSURE" && (
                         <div className="max-w-4xl mx-auto">
                             <ClosurePanel
+                                canEdit={canEditPhysical}
                                 catalog={catalog}
                                 currentInventory={inventoryData.filter(d => d.sucursal === activeSucursal)}
                                 onSave={async (counts) => {
@@ -2000,10 +2094,10 @@ export default function Dashboard() {
                             />
                         </div>
                     )}
-                    {view === "DASHBOARD" && (
+                    {(view === "DASHBOARD" || view === "CORRECTIONS") && (
                         <div className="space-y-8 max-w-[1600px] mx-auto">
                             {/* Area de Sincronización (Solo Admin y Analista) */}
-                            {canUploadExcel && (
+                            {view === "DASHBOARD" && canUploadExcel && (
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                     <div
                                         onDragOver={handleDragOver}
@@ -2063,24 +2157,26 @@ export default function Dashboard() {
                             )}
 
                             {/* Resumen de KPIs */}
-                            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
-                                {!isSimpleView && (
-                                    <>
-                                        <KPICard title="Total Unidades Vendidas" value={totalSalidas} icon={<ShoppingCart size={20} />} color="cyan" trend="+12.5%" trendUp={true} />
-                                        <KPICard title="Fiabilidad Inventario" value={`${((totalSalidas / (totalSalidas + totalFugasUnd)) * 100).toFixed(1)}%`} icon={<Activity size={20} />} color="emerald" trend="vs Nivel Óptimo" trendUp={true} />
-                                    </>
-                                )}
+                            {view === "DASHBOARD" && (
+                                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+                                    {!isSimpleView && (
+                                        <>
+                                            <KPICard title="Total Unidades Vendidas" value={totalSalidas} icon={<ShoppingCart size={20} />} color="cyan" trend="+12.5%" trendUp={true} />
+                                            <KPICard title="Fiabilidad Inventario" value={`${((totalSalidas / (totalSalidas + totalFugasUnd)) * 100).toFixed(1)}%`} icon={<Activity size={20} />} color="emerald" trend="vs Nivel Óptimo" trendUp={true} />
+                                        </>
+                                    )}
 
-                                {canViewFinancialMertics && (
-                                    <>
-                                        <KPICard title="Pérdida por Fugas" value={`$${totalFugas.toLocaleString("es-CO")}`} icon={<AlertTriangle size={20} />} color="rose" trend="Inventario Físico Inferior" trendUp={false} alert={totalFugas > 0} />
-                                        <KPICard title="Valor de Ahorro" value={`$${totalAhorros.toLocaleString("es-CO")}`} icon={<TrendingUp size={20} />} color="emerald" trend="Inventario Físico Superior" trendUp={true} />
-                                    </>
-                                )}
-                            </div>
+                                    {canViewFinancialMertics && (
+                                        <>
+                                            <KPICard title="Pérdida por Fugas" value={`$${totalFugas.toLocaleString("es-CO")}`} icon={<AlertTriangle size={20} />} color="rose" trend="Inventario Físico Inferior" trendUp={false} alert={totalFugas > 0} />
+                                            <KPICard title="Valor de Ahorro" value={`$${totalAhorros.toLocaleString("es-CO")}`} icon={<TrendingUp size={20} />} color="emerald" trend="Inventario Físico Superior" trendUp={true} />
+                                        </>
+                                    )}
+                                </div>
+                            )}
 
                             {/* Dashboards Visuales */}
-                            {!isSimpleView && (
+                            {view === "DASHBOARD" && !isSimpleView && (
                                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                                     <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm">
                                         <h3 className="text-slate-800 font-bold mb-6 flex items-center gap-2">
@@ -2141,6 +2237,52 @@ export default function Dashboard() {
                                 </div>
                             )}
 
+                            {/* Panel de Aprobación de Ajustes Historicos */}
+                            {view === "CORRECTIONS" && (
+                                <>
+                                    <div className="mb-6 bg-rose-50 border border-rose-200 text-rose-800 px-4 py-4 rounded-2xl flex items-center gap-3 shadow-sm">
+                                        <AlertTriangle className="text-rose-600 size-6" />
+                                        <div>
+                                            <p className="text-sm font-bold">Modo de Corrección Histórica de Inventario</p>
+                                            <p className="text-xs">Estás editando datos consolidados. Cualquier cambio impactará reportes pasados permanentemente.</p>
+                                        </div>
+                                    </div>
+
+                                    {pendingCorrections.length > 0 && (
+                                        <div className="mb-8 bg-white border border-orange-200 rounded-3xl p-6 shadow-xl relative overflow-hidden">
+                                            <div className="absolute top-0 left-0 bottom-0 w-2 bg-orange-500"></div>
+                                            <h3 className="text-xl font-black text-slate-800 mb-4 flex items-center gap-2">
+                                                <Box size={20} className="text-orange-500" />
+                                                Solicitudes de Cajeros Pendientes
+                                            </h3>
+                                            <div className="space-y-4">
+                                                {pendingCorrections.map(req => (
+                                                    <div key={req.id} className="bg-slate-50 border border-slate-200 p-5 rounded-2xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                                                        <div>
+                                                            <div className="flex items-center gap-2 mb-1">
+                                                                <span className="text-[10px] font-black uppercase tracking-widest text-orange-600 bg-orange-100 px-2 py-0.5 rounded">Pendiente</span>
+                                                                <span className="text-xs font-bold text-slate-500">{req.fecha} | {req.sedes?.nombre}</span>
+                                                            </div>
+                                                            <p className="font-bold text-slate-800">{req.products?.nombre || 'Producto'}</p>
+                                                            <p className="text-sm text-slate-600 mt-1">Conteo Propuesto: <b className="text-rose-600">{req.valor_nuevo}</b> (Anterior: {req.valor_anterior})</p>
+                                                            <p className="text-xs text-slate-500 mt-2 bg-white p-2 rounded-lg border border-slate-100 italic">"{req.motivo}"</p>
+                                                        </div>
+                                                        <div className="flex gap-2 w-full md:w-auto">
+                                                            <button onClick={() => handleRejectCorrection(req)} className="flex-1 md:flex-none px-4 py-2 bg-white text-rose-600 hover:bg-rose-50 border border-rose-200 rounded-xl text-sm font-bold transition-all flex justify-center items-center gap-2">
+                                                                <X size={16} /> Rechazar
+                                                            </button>
+                                                            <button onClick={() => handleApproveCorrection(req)} className="flex-1 md:flex-none px-4 py-2 bg-emerald-600 text-white hover:bg-emerald-500 shadow-md rounded-xl text-sm font-bold transition-all flex justify-center items-center gap-2">
+                                                                <Check size={16} /> Aprobar
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                </>
+                            )}
+
                             {/* Tabla de Resultados Inteligente y Evaluable */}
                             {!isSimpleView && (
                                 <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden mt-4">
@@ -2182,6 +2324,16 @@ export default function Dashboard() {
                                             </button>
                                         </div>
                                     </div>
+
+                                    {!canEditPhysical && isSimpleView === false && view !== "CORRECTIONS" && (
+                                        <div className="mx-5 mb-4 bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-2xl flex items-center gap-3">
+                                            <AlertTriangle className="text-amber-600 size-5" />
+                                            <div>
+                                                <p className="text-sm font-bold">Modo Lectura de Cierre Pasado</p>
+                                                <p className="text-xs">Las entradas físicas y mermas de este día están bloqueadas. Utiliza el módulo "Ajustes Históricos" para rectificar.</p>
+                                            </div>
+                                        </div>
+                                    )}
 
                                     {isMobileMode ? (
                                         <MobileInventoryMode
@@ -2293,7 +2445,12 @@ export default function Dashboard() {
 
                             {/* Vista Interactiva de Cajero */}
                             {isSimpleView && (
-                                <CashierVisualReport inventoryData={filteredData} />
+                                <CashierVisualReport 
+                                    inventoryData={filteredData} 
+                                    notify={notify}
+                                    userSession={sessionUser}
+                                    selectedDate={selectedDate}
+                                />
                             )}
                         </div>
                     )}
@@ -3228,7 +3385,7 @@ interface ClosureCount extends Product {
     fisico: number;
 }
 
-function ClosurePanel({ catalog, currentInventory, onSave }: { catalog: Product[], currentInventory: any[], onSave: (counts: ClosureCount[]) => void }) {
+function ClosurePanel({ catalog, currentInventory, onSave, canEdit = true }: { catalog: Product[], currentInventory: any[], onSave: (counts: ClosureCount[]) => void, canEdit?: boolean }) {
     const [searchTerm, setSearchTerm] = useState("");
     const [counts, setCounts] = useState<Record<string, number>>({});
 
@@ -3282,12 +3439,14 @@ function ClosurePanel({ catalog, currentInventory, onSave }: { catalog: Product[
                             onChange={(e) => setSearchTerm(e.target.value)}
                         />
                     </div>
-                    <button
-                        onClick={handleSave}
-                        className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-3 rounded-xl font-black text-sm transition-all shadow-lg shadow-indigo-600/20 flex items-center gap-2"
-                    >
-                        <CheckCircle2 size={18} /> FINALIZAR CONTEO
-                    </button>
+                    {canEdit && (
+                        <button
+                            onClick={handleSave}
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-3 rounded-xl font-black text-sm transition-all shadow-lg shadow-indigo-600/20 flex items-center gap-2"
+                        >
+                            <CheckCircle2 size={18} /> FINALIZAR CONTEO
+                        </button>
+                    )}
                 </div>
 
                 <div className="max-h-[600px] overflow-y-auto">
@@ -3312,7 +3471,8 @@ function ClosurePanel({ catalog, currentInventory, onSave }: { catalog: Product[
                                         <input
                                             type="number"
                                             step="0.01"
-                                            className="w-full bg-white border-2 border-slate-200 rounded-xl py-3 text-center text-lg font-black text-indigo-700 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 transition-all"
+                                            disabled={!canEdit}
+                                            className="w-full bg-white border-2 border-slate-200 rounded-xl py-3 text-center text-lg font-black text-indigo-700 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 transition-all disabled:opacity-50 disabled:bg-slate-100 disabled:cursor-not-allowed"
                                             placeholder="0"
                                             value={counts[product.id] === 0 ? "0" : counts[product.id] || ""}
                                             onChange={(e) => updateCount(product.id, e.target.value)}
@@ -3343,12 +3503,26 @@ function InitialInventoryPanel({ catalog, currentInventory, sedeName, selectedDa
     selectedDate: string,
     onSave: (items: InitialInventoryItem[]) => void
 }) {
+    const STORAGE_KEY = `kardex_initial_draft_${sedeName}_${selectedDate}`;
+
     const [searchTerm, setSearchTerm] = useState("");
-    const [quantities, setQuantities] = useState<Record<string, number>>({});
+    const [quantities, setQuantities] = useState<Record<string, number>>(() => {
+        if (typeof window !== 'undefined') {
+            const saved = sessionStorage.getItem(STORAGE_KEY);
+            if (saved) return JSON.parse(saved);
+        }
+        return {};
+    });
 
     const hasExistingInitial = currentInventory.some(item => item.inicial > 0);
 
     useEffect(() => {
+        const saved = sessionStorage.getItem(STORAGE_KEY);
+        if (saved && Object.keys(JSON.parse(saved)).length > 0) {
+            setQuantities(JSON.parse(saved));
+            return;
+        }
+
         const initial: Record<string, number> = {};
         (currentInventory || []).forEach(item => {
             const prod = catalog.find(p => p.nombre === item.articulo);
@@ -3357,7 +3531,11 @@ function InitialInventoryPanel({ catalog, currentInventory, sedeName, selectedDa
             }
         });
         setQuantities(initial);
-    }, [currentInventory, catalog]);
+    }, [currentInventory, catalog, STORAGE_KEY]);
+
+    useEffect(() => {
+        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(quantities));
+    }, [quantities, STORAGE_KEY]);
 
     const filteredProducts = (catalog || []).filter(p =>
         p.nombre.toLowerCase().includes(searchTerm.toLowerCase())
@@ -3389,6 +3567,7 @@ function InitialInventoryPanel({ catalog, currentInventory, sedeName, selectedDa
             return;
         }
         onSave(items);
+        sessionStorage.removeItem(STORAGE_KEY);
     };
 
     return (
@@ -3786,7 +3965,42 @@ function ProductionHistoryPanel({ history, isLoading }: { history: any[], isLoad
     );
 }
 
-function CashierVisualReport({ inventoryData }: { inventoryData: any[] }) {
+function CashierVisualReport({ inventoryData, notify, userSession, selectedDate }: { inventoryData: any[], notify: any, userSession: any, selectedDate: string }) {
+    const [requestingItem, setRequestingItem] = useState<any>(null);
+    const [nuevoValor, setNuevoValor] = useState("");
+    const [motivo, setMotivo] = useState("");
+    const [isSubmitting, setIsSubmitting] = useState(false);
+
+    const handleSubmitCorrection = async () => {
+        if (!nuevoValor || isNaN(Number(nuevoValor))) return notify("Valor numérico inválido", "error");
+        if (!motivo.trim()) return notify("Debes justificar la corrección", "error");
+        setIsSubmitting(true);
+        try {
+            const { error } = await supabase.from('inventory_corrections').insert([{
+                inventory_daily_id: requestingItem.id,
+                sede_id: requestingItem.sede_id,
+                product_id: requestingItem.product_id,
+                fecha: selectedDate,
+                tipo: 'FISICO',
+                valor_anterior: requestingItem.fisico || 0,
+                valor_nuevo: Number(nuevoValor),
+                motivo,
+                solicitante_id: userSession.id
+            }]);
+            
+            if (error) throw error;
+            notify("Solicitud de corrección enviada a Administración", "success");
+            setRequestingItem(null);
+            setNuevoValor("");
+            setMotivo("");
+        } catch (err: any) {
+            console.error(err);
+            notify("Hubo un error al enviar la solicitud: " + err.message, "error");
+        } finally {
+            setIsSubmitting(false);
+        }
+    };
+
     // Calculo financiero al estilo Plan Cero, solo incluyendo los items marcados por administrador
     const data = inventoryData.filter(row => row.reportarPlanCero).map(row => {
         const fugaUnits = row.teorico - (Number(row.fisico) || 0); // Fuga positiva = faltante
@@ -3926,11 +4140,77 @@ function CashierVisualReport({ inventoryData }: { inventoryData: any[] }) {
                                         <span>¡Cantidades exactas!</span>
                                     </div>
                                 )}
+
+                                <button
+                                    onClick={() => setRequestingItem(item)}
+                                    className="w-full mt-4 py-3 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 text-sm font-bold flex items-center justify-center gap-2 transition-all"
+                                >
+                                    <AlertTriangle size={16} className="text-orange-500" /> Solicitar Corrección a Supervisor
+                                </button>
                             </div>
                         </div>
                     );
                 })}
             </div>
+
+            {/* Modal de Solicitud de Corrección */}
+            {requestingItem && (
+                <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[200] flex items-center justify-center p-4 transition-all">
+                    <div className="bg-white rounded-3xl shadow-2xl p-6 md:p-8 max-w-md w-full animate-in zoom-in-95 duration-200">
+                        <div className="flex justify-between items-center mb-6">
+                            <div className="flex items-center gap-3">
+                                <div className="size-10 rounded-xl bg-orange-100 flex items-center justify-center text-orange-600 shadow-inner">
+                                    <Box size={20} />
+                                </div>
+                                <h3 className="text-xl font-black text-slate-900">Ajuste de Inventario</h3>
+                            </div>
+                            <button onClick={() => setRequestingItem(null)} className="text-slate-400 hover:text-slate-600 bg-slate-50 hover:bg-slate-100 p-2 rounded-xl transition-all"><X size={20} /></button>
+                        </div>
+
+                        <div className="space-y-4">
+                            <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 shadow-inner">
+                                <p className="text-[10px] uppercase font-black tracking-widest text-slate-400 mb-1">Producto Reportado</p>
+                                <p className="font-bold text-slate-800 text-lg">{requestingItem.articulo}</p>
+                                <div className="flex items-center gap-2 mt-2 text-sm bg-white px-3 py-1.5 rounded-lg border border-slate-100 w-fit">
+                                    <p className="text-slate-500 font-medium">Conteo actual de revisión:</p>
+                                    <b className="text-rose-600 font-black text-lg">{requestingItem.fisico}</b>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 mb-1.5 block">Nuevo Valor Físico a Aprobar</label>
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    value={nuevoValor}
+                                    onChange={(e) => setNuevoValor(e.target.value)}
+                                    className="w-full bg-white border border-slate-200 focus:border-cyan-500 focus:ring-4 focus:ring-cyan-500/10 rounded-xl px-4 py-3 text-lg font-bold transition-all shadow-sm text-center"
+                                    placeholder="Ej. 15.5"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 mb-1.5 block">Justificación (Motivo del Cambio)</label>
+                                <textarea
+                                    value={motivo}
+                                    onChange={(e) => setMotivo(e.target.value)}
+                                    className="w-full bg-white border border-slate-200 focus:border-cyan-500 focus:ring-4 focus:ring-cyan-500/10 rounded-xl px-4 py-3 text-sm font-medium transition-all shadow-sm resize-none h-24"
+                                    placeholder="Ej. Producto mal contado, no se descontó en venta, reposición externa..."
+                                />
+                            </div>
+
+                            <button
+                                onClick={handleSubmitCorrection}
+                                disabled={isSubmitting}
+                                className="w-full py-4 mt-4 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white rounded-xl font-black text-sm transition-all shadow-lg flex items-center justify-center gap-2"
+                            >
+                                {isSubmitting ? <Loader2 className="animate-spin" size={18} /> : <Check size={18} />}
+                                {isSubmitting ? "ENVIANDO REVISIÓN..." : "ENVIAR SOLICITUD AL ADMINISTRADOR"}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

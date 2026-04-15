@@ -1882,6 +1882,8 @@ export default function Dashboard() {
                                 canEdit={canEditPhysical}
                                 catalog={catalog}
                                 currentInventory={inventoryData.filter(d => d.sucursal === activeSucursal)}
+                                sedeName={activeSucursal}
+                                selectedDate={selectedDate}
                                 onSave={async (counts) => {
                                     setIsLoading(true);
                                     try {
@@ -1903,6 +1905,8 @@ export default function Dashboard() {
                                         }
 
                                         notify("Inventario final guardado exitosamente", "success");
+                                        const STORAGE_KEY = `kardex_closure_draft_${activeSucursal}_${selectedDate}`;
+                                        sessionStorage.removeItem(STORAGE_KEY);
                                         window.location.reload();
                                     } catch (err: any) {
                                         console.error(err);
@@ -3435,12 +3439,32 @@ interface ClosureCount extends Product {
     fisico: number;
 }
 
-function ClosurePanel({ catalog, currentInventory, onSave, canEdit = true }: { catalog: Product[], currentInventory: any[], onSave: (counts: ClosureCount[]) => void, canEdit?: boolean }) {
+function ClosurePanel({ catalog, currentInventory, sedeName, selectedDate, onSave, canEdit = true }: { 
+    catalog: Product[], 
+    currentInventory: any[], 
+    sedeName: string,
+    selectedDate: string,
+    onSave: (counts: ClosureCount[]) => void, 
+    canEdit?: boolean 
+}) {
+    const STORAGE_KEY = `kardex_closure_draft_${sedeName}_${selectedDate}`;
     const [searchTerm, setSearchTerm] = useState("");
-    const [counts, setCounts] = useState<Record<string, number>>({});
+    const [counts, setCounts] = useState<Record<string, number>>(() => {
+        if (typeof window !== 'undefined') {
+            const saved = sessionStorage.getItem(STORAGE_KEY);
+            if (saved) return JSON.parse(saved);
+        }
+        return {};
+    });
 
     // Inicializar counts con valores actuales si existen
     useEffect(() => {
+        const saved = sessionStorage.getItem(STORAGE_KEY);
+        if (saved && Object.keys(JSON.parse(saved)).length > 0) {
+            setCounts(JSON.parse(saved));
+            return;
+        }
+
         const initialCounts: Record<string, number> = {};
         (currentInventory || []).forEach(item => {
             const prod = catalog.find(p => p.nombre === item.articulo);
@@ -3449,7 +3473,11 @@ function ClosurePanel({ catalog, currentInventory, onSave, canEdit = true }: { c
             }
         });
         setCounts(initialCounts);
-    }, [currentInventory, catalog]);
+    }, [currentInventory, catalog, STORAGE_KEY]);
+
+    useEffect(() => {
+        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(counts));
+    }, [counts, STORAGE_KEY]);
 
     const filteredProducts = (catalog || []).filter(p =>
         p.nombre.toLowerCase().includes(searchTerm.toLowerCase())

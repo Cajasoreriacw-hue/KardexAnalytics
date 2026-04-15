@@ -811,7 +811,7 @@ export default function Dashboard() {
     // Solo se permite editar inventario final y matriz física en el día actual a menos que estemos en CORS.
     const isToday = selectedDate === initialDate;
     const isCorrectionsMode = view === "CORRECTIONS";
-    const canEditPhysical = ["ADMIN", "SUPERVISOR", "ANALYST"].includes(role) && (isToday || isCorrectionsMode);
+    const canEditPhysical = isToday || (["ADMIN", "SUPERVISOR", "ANALYST"].includes(role) && isCorrectionsMode);
     
     const canSelectForReport = ["ADMIN", "ANALYST"].includes(role);
     const isSimpleView = role === "CASHIER";

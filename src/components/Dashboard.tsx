@@ -14,7 +14,7 @@ import {
     ShoppingCart, ArrowRightLeft, ClipboardList, Plus, Search, Filter, MoreVertical,
     Printer, Trash2, ArrowUpRight, Sparkles, Send, MessageSquare, Bot, Cpu, Smartphone, QrCode,
     BookOpenText, Boxes, Menu, CloudDownload, Calendar, ChevronDown, ChevronLeft, ChevronRight,
-    ArrowDownRight, ArrowDown
+    ArrowDownRight, ArrowDown, ArrowDownToLine
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import Login from "./Login";
@@ -487,42 +487,68 @@ export default function Dashboard() {
         return () => subscription.unsubscribe();
     }, []); // IMPORTANTE: Solo una vez, no depender de sessionUser
 
+    const fetchInventoryData = async () => {
+        if (!sessionUser || sedes.length === 0) return;
+        try {
+            const { data, error } = await supabase
+                .from('inventory_daily')
+                .select('*, products(nombre, unidad)')
+                .eq('fecha', selectedDate);
+            
+            if (error) throw error;
+
+            const { data: purchases } = await supabase
+                .from('purchase_registries')
+                .select('product_id, cantidad, sede_id')
+                .eq('fecha', selectedDate);
+
+            if (data) {
+                const formatted = data.map(item => {
+                    const mermas = Number(item.mermas) || 0;
+                    
+                    // Cross-reference con historial para mayor seguridad en la visualización
+                    const historicalEntradas = (purchases || [])
+                        .filter(p => {
+                            const matchP = String(p.product_id) === String(item.product_id);
+                            // Si estamos viendo una sede específica, validamos sede. Si es "Todas", solo producto.
+                            const matchS = activeSucursal === "Todas" ? true : String(p.sede_id) === String(item.sede_id);
+                            return matchP && matchS;
+                        })
+                        .reduce((acc, curr) => acc + curr.cantidad, 0);
+                    
+                    // Usamos el mayor entre el acumulado y el historial detallado por si uno falló en sincronizar
+                    const finalEntradas = Math.max(Number(item.entradas) || 0, historicalEntradas);
+                    
+                    const teorico = (item.inicial + finalEntradas - (item.salidas_ventas || 0) - mermas);
+                    return {
+                        id: item.id,
+                        articulo: item.products?.nombre || 'Desconocido',
+                        inicial: item.inicial,
+                        entradas: finalEntradas,
+                        salidaVentas: item.salidas_ventas,
+                        mermas: mermas,
+                        teorico: teorico,
+                        fisico: item.fisico,
+                        dif: (Number(item.fisico) || 0) - teorico,
+                        estado: ((Number(item.fisico) || 0) - teorico) < 0 ? 'Fuga' : 'Ok',
+                        costo: item.costo_en_fecha,
+                        reportarPlanCero: item.reportar_plan_cero,
+                        unidad: item.products?.unidad || 'UND',
+                        sucursal: sedes.find(s => s.id === item.sede_id)?.nombre || 'Principal',
+                        sede_id: item.sede_id,
+                        product_id: item.product_id
+                    };
+                });
+                setInventoryData(formatted);
+            }
+        } catch (err) {
+            console.error("Error al refrescar inventario:", err);
+        }
+    };
+
     // Efecto reactivo al cambio de FECHA
     useEffect(() => {
-        if (sessionUser && sedes.length > 0) {
-            const refreshInv = async () => {
-                const { data } = await supabase
-                    .from('inventory_daily')
-                    .select('*, products(nombre, unidad)')
-                    .eq('fecha', selectedDate);
-                if (data) {
-                    const formatted = data.map(item => {
-                        const mermas = Number(item.mermas) || 0;
-                        const teorico = (item.inicial + (item.entradas || 0) - (item.salidas_ventas || 0) - mermas);
-                        return {
-                            id: item.id,
-                            articulo: item.products?.nombre || 'Desconocido',
-                            inicial: item.inicial,
-                            entradas: item.entradas,
-                            salidaVentas: item.salidas_ventas,
-                            mermas: mermas,
-                            teorico: teorico,
-                            fisico: item.fisico,
-                            dif: (Number(item.fisico) || 0) - teorico,
-                            estado: ((Number(item.fisico) || 0) - teorico) < 0 ? 'Fuga' : 'Ok',
-                            costo: item.costo_en_fecha,
-                            reportarPlanCero: item.reportar_plan_cero,
-                            unidad: item.products?.unidad || 'UND',
-                            sucursal: sedes.find(s => s.id === item.sede_id)?.nombre || 'Principal',
-                            sede_id: item.sede_id,
-                            product_id: item.product_id
-                        };
-                    });
-                    setInventoryData(formatted);
-                }
-            };
-            refreshInv();
-        }
+        fetchInventoryData();
     }, [selectedDate, sessionUser?.id, sedes.length]);
 
     // Efecto para Recetas y Catálogo (Estático)
@@ -1867,7 +1893,8 @@ export default function Dashboard() {
                                             if (error) throw error;
                                         }
                                         notify("Mermas registradas correctamente", "success");
-                                        window.location.reload();
+                                        fetchInventoryData();
+                                        setView("WASTE_HISTORY");
                                     } catch (err: any) {
                                         console.error(err);
                                         notify("Error: " + err.message, "error");
@@ -1898,9 +1925,18 @@ export default function Dashboard() {
                                         if (!sedeId) throw new Error("No se identificó la sede.");
 
                                         for (const count of counts) {
+                                            const { data: existing } = await supabase
+                                                .from('inventory_daily')
+                                                .select('*')
+                                                .eq('sede_id', sedeId)
+                                                .eq('product_id', count.id)
+                                                .eq('fecha', selectedDate)
+                                                .maybeSingle();
+
                                             const { error } = await supabase
                                                 .from('inventory_daily')
                                                 .upsert({
+                                                    ...(existing || {}),
                                                     sede_id: sedeId,
                                                     product_id: count.id,
                                                     fecha: selectedDate,
@@ -1914,7 +1950,8 @@ export default function Dashboard() {
                                         notify("Inventario final guardado exitosamente", "success");
                                         const STORAGE_KEY = `kardex_closure_draft_${activeSucursal}_${selectedDate}`;
                                         sessionStorage.removeItem(STORAGE_KEY);
-                                        window.location.reload();
+                                        fetchInventoryData();
+                                        setView("DASHBOARD");
                                     } catch (err: any) {
                                         console.error(err);
                                         notify("Error: " + err.message, "error");
@@ -1932,36 +1969,44 @@ export default function Dashboard() {
                                 currentInventory={inventoryData.filter(d => d.sucursal === activeSucursal)}
                                 sedeName={activeSucursal}
                                 selectedDate={selectedDate}
+                                sedes={sedes}
+                                notify={notify}
                                 onSave={async (items) => {
                                     setIsLoading(true);
                                     try {
                                         const sedeId = sedes.find(s => s.nombre === activeSucursal)?.id;
                                         if (!sedeId) throw new Error("Selecciona una sede válida.");
 
+                                        // 1. Obtener registros existentes para esta sede y fecha para preservar entradas, físico, etc.
+                                        const { data: existingInventory } = await supabase
+                                            .from('inventory_daily')
+                                            .select('*')
+                                            .eq('sede_id', sedeId)
+                                            .eq('fecha', selectedDate);
+
                                         for (const item of items) {
+                                            const existing = (existingInventory || []).find(ex => ex.product_id === item.id);
+                                            
                                             const { error } = await supabase
                                                 .from('inventory_daily')
                                                 .upsert({
+                                                    // Si existe, traemos TODO lo que ya tiene (entradas, salidas, físico, mermas)
+                                                    ...(existing || {}),
                                                     sede_id: sedeId,
                                                     product_id: item.id,
                                                     fecha: selectedDate,
                                                     inicial: item.inicial,
-                                                    costo_en_fecha: item.costoPorUnidad,
-                                                    entradas: 0,
-                                                    salidas_ventas: 0,
-                                                    mermas: 0,
-                                                    fisico: 0,
+                                                    costo_en_fecha: item.costoPorUnidad
                                                 }, { onConflict: 'sede_id, product_id, fecha' });
 
                                             if (error) throw error;
                                         }
 
-                                        notify(`Inventario inicial guardado para ${activeSucursal}`, "success");
-
-                                        // Refrescar datos silenciosamente
-                                        const session = (await supabase.auth.getSession()).data.session;
-                                        if (session) loadAppData(session, false);
-
+                                        notify("Inventario inicial guardado exitosamente", "success");
+                                        const STORAGE_KEY = `kardex_initial_draft_${activeSucursal}_${selectedDate}`;
+                                        sessionStorage.removeItem(STORAGE_KEY);
+                                        fetchInventoryData();
+                                        setView("DASHBOARD");
                                     } catch (err: any) {
                                         console.error(err);
                                         notify("Error: " + err.message, "error");
@@ -1987,7 +2032,6 @@ export default function Dashboard() {
                                         const sessionData = (await supabase.auth.getSession()).data.session;
                                         const user = sessionData?.user;
 
-                                        // 1. Guardar en tabla productions
                                         const { error: prodError } = await supabase.from('productions').insert({
                                             sede_id: sedeId,
                                             recipe_id: productionData.recipe.id,
@@ -2004,13 +2048,11 @@ export default function Dashboard() {
 
                                         if (prodError) throw prodError;
 
-                                        // 2. Traer ingredientes de la receta
                                         const { data: recipeIng } = await supabase
                                             .from('recipe_ingredients')
                                             .select('*')
                                             .eq('recipe_id', productionData.recipe.id);
 
-                                        // 3. Descontar ingredientes
                                         if (recipeIng) {
                                             for (const ing of recipeIng) {
                                                 const totalIngQty = ing.cantidad * productionData.cantidad;
@@ -2036,8 +2078,6 @@ export default function Dashboard() {
                                             }
                                         }
 
-                                        // 4. Sumar producto terminado y procesar merma (sobre el producto terminado o insumos)
-                                        // Aquí la merma se asigna al producto terminado. Si requieres otra lógica avísame.
                                         const { data: existingProdObj } = await supabase
                                             .from('inventory_daily')
                                             .select('id, entradas, mermas')
@@ -2059,8 +2099,7 @@ export default function Dashboard() {
                                         await supabase.from('inventory_daily').upsert(ptPayload, { onConflict: 'sede_id, product_id, fecha' });
 
                                         notify("Producción registrada y descontada correctamente", "success");
-                                        
-                                        if (sessionData) loadAppData(sessionData, false);
+                                        fetchInventoryData();
                                     } catch (err: any) {
                                         console.error(err);
                                         notify("Error: " + err.message, "error");
@@ -2083,13 +2122,10 @@ export default function Dashboard() {
                                 onSaveEntries={async (entries) => {
                                     setIsLoading(true);
                                     try {
-                                        // Obtener el ID de la sede actual
                                         const sedeId = sedes.find(s => s.nombre === activeSucursal)?.id;
                                         if (!sedeId) throw new Error("No se identificó la sede activa.");
 
-                                        // Preparar los datos para el upsert en inventory_daily
                                         for (const entry of entries) {
-                                            // 1. Log histórico en purchase_registries
                                             const { error: logError } = await supabase
                                                 .from('purchase_registries')
                                                 .insert([{
@@ -2101,29 +2137,28 @@ export default function Dashboard() {
                                                 }]);
                                             
                                             if (logError) {
-                                                console.warn("No se pudo guardar el log de compra (¿Falta tabla purchase_registries?):", logError.message);
+                                                console.warn("No se pudo guardar el log de compra:", logError.message);
                                             }
 
-                                            // 2. Actualizar inventory_daily
                                             const { data: existingDB } = await supabase
                                                 .from('inventory_daily')
-                                                .select('id, entradas, inicial, mermas, salidas_ventas')
+                                                .select('*') // Traer TODO para no perder mermas, fisico, inicial, etc.
                                                 .eq('sede_id', sedeId)
                                                 .eq('product_id', entry.id)
                                                 .eq('fecha', selectedDate)
-                                                .single();
+                                                .maybeSingle();
 
                                             const payload: any = {
+                                                ...(existingDB || {}), // Preservar todo lo existente
                                                 sede_id: sedeId,
                                                 product_id: entry.id,
                                                 fecha: selectedDate,
                                                 entradas: (existingDB?.entradas || 0) + entry.cantidad,
                                                 costo_en_fecha: entry.costoPorUnidad
                                             };
-
-                                            if (existingDB) {
-                                                payload.id = existingDB.id;
-                                            } else {
+                                            
+                                            // Si no existía el registro, inicializamos los valores preventivamente
+                                            if (!existingDB) {
                                                 payload.inicial = 0;
                                                 payload.mermas = 0;
                                                 payload.salidas_ventas = 0;
@@ -2132,13 +2167,13 @@ export default function Dashboard() {
 
                                             const { error: upsertError } = await supabase
                                                 .from('inventory_daily')
-                                                .upsert(payload, { onConflict: 'id' });
+                                                .upsert(payload, { onConflict: 'sede_id, product_id, fecha' });
 
                                             if (upsertError) throw upsertError;
                                         }
 
                                         notify("Entradas guardadas y registradas en el historial.", "success");
-                                        if (sessionUser) loadAppData(sessionUser, false);
+                                        fetchInventoryData();
                                         setView("PURCHASES_HISTORY");
                                     } catch (err: any) {
                                         console.error("Error guardando compras:", err);
@@ -3602,11 +3637,13 @@ interface InitialInventoryItem {
     inicial: number;
 }
 
-function InitialInventoryPanel({ catalog, currentInventory, sedeName, selectedDate, onSave }: {
+function InitialInventoryPanel({ catalog, currentInventory, sedeName, selectedDate, sedes, notify, onSave }: {
     catalog: Product[],
     currentInventory: any[],
     sedeName: string,
     selectedDate: string,
+    sedes: Sede[],
+    notify: (m: string, t?: any) => void,
     onSave: (items: InitialInventoryItem[]) => void
 }) {
     const STORAGE_KEY = `kardex_initial_draft_${sedeName}_${selectedDate}`;
@@ -3623,6 +3660,9 @@ function InitialInventoryPanel({ catalog, currentInventory, sedeName, selectedDa
     const hasExistingInitial = currentInventory.some(item => item.inicial > 0);
 
     useEffect(() => {
+        // Solo cargamos automáticamente si el estado de cantidades está vacío
+        if (Object.keys(quantities).length > 0) return;
+
         const saved = sessionStorage.getItem(STORAGE_KEY);
         if (saved && Object.keys(JSON.parse(saved)).length > 0) {
             setQuantities(JSON.parse(saved));
@@ -3676,6 +3716,72 @@ function InitialInventoryPanel({ catalog, currentInventory, sedeName, selectedDa
         sessionStorage.removeItem(STORAGE_KEY);
     };
 
+    const handleCarryOver = async () => {
+        try {
+            if (sedeName === "Todas") {
+                notify("Por favor selecciona una sede específica para arrastrar saldos.", "warning");
+                return;
+            }
+
+            const sedeId = sedes.find(s => s.nombre === sedeName)?.id;
+            if (!sedeId) {
+                notify(`No se encontró la configuración para la sede: ${sedeName}`, "error");
+                return;
+            }
+
+            // 1. Calcular fecha de ayer
+            const [y, m, d] = selectedDate.split("-");
+            const date = new Date(Number(y), Number(m) - 1, Number(d));
+            date.setDate(date.getDate() - 1);
+            
+            const yesterdayDate = date.getFullYear() + '-' + 
+                                 String(date.getMonth() + 1).padStart(2, '0') + '-' + 
+                                 String(date.getDate()).padStart(2, '0');
+
+            // 2. Fetch inventory_daily for yesterday
+            const { data, error } = await supabase
+                .from('inventory_daily')
+                .select('product_id, fisico, inicial, entradas, salidas_ventas, mermas')
+                .eq('fecha', yesterdayDate)
+                .eq('sede_id', sedeId);
+                
+            if (error) throw error;
+            
+            if (data && data.length > 0) {
+                const carry: Record<string, number> = {};
+                let count = 0;
+                data.forEach(item => {
+                    // Calculamos el teórico de ayer por si no hubo conteo físico
+                    const teoricoAyer = (Number(item.inicial) || 0) + 
+                                       (Number(item.entradas) || 0) - 
+                                       (Number(item.salidas_ventas) || 0) - 
+                                       (Number(item.mermas) || 0);
+
+                    // Priorizamos el Físico Real si existe, si no, usamos el Teórico
+                    const valorFinalAyer = (Number(item.fisico) > 0) ? Number(item.fisico) : teoricoAyer;
+                    
+                    if (valorFinalAyer > 0) {
+                        carry[item.product_id] = valorFinalAyer;
+                        count++;
+                    }
+                });
+
+                if (count > 0) {
+                    sessionStorage.removeItem(STORAGE_KEY);
+                    setQuantities(carry); 
+                    notify(`¡Éxito! Se arrastraron ${count} saldos finales del ${yesterdayDate}.`, "success");
+                } else {
+                    notify(`Se encontró el registro del ${yesterdayDate}, pero no hay saldos positivos para arrastrar.`, "warning");
+                }
+            } else {
+                notify(`No se encontró ningún cierre registrado para el ${yesterdayDate} en esta sede.`, "error");
+            }
+        } catch (err: any) {
+            console.error("Error al arrastrar saldos:", err);
+            window.alert("Error técnico: " + err.message);
+        }
+    };
+
     return (
         <div className="space-y-6">
             <div className="bg-gradient-to-br from-amber-500 to-orange-600 p-8 rounded-[2rem] text-white shadow-xl">
@@ -3708,10 +3814,16 @@ function InitialInventoryPanel({ catalog, currentInventory, sedeName, selectedDa
                             onChange={(e) => setSearchTerm(e.target.value)}
                         />
                     </div>
-                    <div className="flex items-center gap-4">
-                        <span className="text-xs font-bold text-slate-500">
+                    <div className="flex items-center gap-3">
+                        <span className="text-xs font-bold text-slate-500 mr-2">
                             {filledCount} / {catalog.length} productos
                         </span>
+                        <button
+                            onClick={handleCarryOver}
+                            className="bg-white border border-cyan-200 text-cyan-600 hover:bg-cyan-50 px-5 py-3 rounded-xl font-black text-xs transition-all flex items-center gap-2 cursor-pointer shadow-sm"
+                        >
+                            <ArrowDownToLine size={16} /> ARRASTRAR DE AYER
+                        </button>
                         <button
                             onClick={handleSave}
                             className="bg-amber-600 hover:bg-amber-700 text-white px-8 py-3 rounded-xl font-black text-sm transition-all shadow-lg shadow-amber-600/20 flex items-center gap-2 cursor-pointer"
@@ -4029,7 +4141,13 @@ function ProductionHistoryPanel({ history, isLoading }: { history: any[], isLoad
                                 filteredHistory.map(row => (
                                     <tr key={row.id} className="hover:bg-slate-50/50 transition-colors">
                                         <td className="px-6 py-4 whitespace-nowrap">
-                                            <p className="font-bold text-slate-800">{new Date(row.fecha).toLocaleDateString()}</p>
+                                            <p className="font-bold text-slate-800">
+                                                {(() => {
+                                                    if (!row.fecha) return "Sin Fecha";
+                                                    const [y, m, d] = row.fecha.split("-");
+                                                    return new Date(Number(y), Number(m)-1, Number(d)).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' });
+                                                })()}
+                                            </p>
                                         </td>
                                         <td className="px-6 py-4">
                                             <span className="bg-slate-100 text-slate-600 px-3 py-1 rounded-lg text-xs font-black">
@@ -6166,7 +6284,11 @@ function WasteHistoryPanel({ history, isLoading }: { history: any[], isLoading: 
                                         <p className="text-[10px] text-slate-400 font-black uppercase mt-0.5">{reg.products?.unidad}</p>
                                     </td>
                                     <td className="px-8 py-5 font-bold text-slate-600">
-                                        {reg.fecha ? new Date(reg.fecha).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) : 'Sin Fecha'}
+                                        {(() => {
+                                            if (!reg.fecha) return "Sin Fecha";
+                                            const [y, m, d] = reg.fecha.split("-");
+                                            return new Date(Number(y), Number(m)-1, Number(d)).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' });
+                                        })()}
                                     </td>
                                     <td className="px-8 py-5">
                                         <span className="bg-slate-100 text-slate-600 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-tighter">
@@ -6294,7 +6416,13 @@ function PurchasesHistoryPanel({ history, isLoading, inventoryData = [] }: { his
                                     </td>
                                     <td className="px-8 py-5">
                                         <div className="flex flex-col">
-                                            <span className="font-bold text-slate-700">{new Date(reg.fecha).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                                            <span className="font-bold text-slate-700">
+                                                {(() => {
+                                                    if (!reg.fecha) return "-";
+                                                    const [y, m, d] = reg.fecha.split("-");
+                                                    return new Date(Number(y), Number(m)-1, Number(d)).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' });
+                                                })()}
+                                            </span>
                                             <span className="text-[10px] text-slate-400">
                                                 {reg.isLegacy ? "Saldo Previo Hoy" : new Date(reg.created_at).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}
                                             </span>

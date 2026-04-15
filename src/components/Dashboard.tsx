@@ -935,8 +935,15 @@ export default function Dashboard() {
                 if (sampleRow && idxNegocio !== -1 && sampleRow[idxNegocio]) {
                     const partesNegocio = String(sampleRow[idxNegocio]).split("-");
                     const branch = partesNegocio.length > 1 ? partesNegocio[1].trim() : String(sampleRow[idxNegocio]);
-                    detectedSucursal = branch;
-                    setDetectedSucursal(branch);
+                    
+                    const matchedSede = sedes.find(s => s.nombre.toLowerCase().includes(branch.toLowerCase()) || branch.toLowerCase().includes(s.nombre.toLowerCase()));
+                    detectedSucursal = matchedSede ? matchedSede.nombre : branch;
+                    setDetectedSucursal(detectedSucursal);
+                } else {
+                    if (activeSucursal !== "Todas" && activeSucursal !== "Principal") {
+                        detectedSucursal = activeSucursal;
+                        setDetectedSucursal(activeSucursal);
+                    }
                 }
 
                 // Generar parsedData basado en el CATÁLOGO completo
@@ -2748,19 +2755,40 @@ export default function Dashboard() {
                                         }
                                     }
 
+                                    // 2.5 Consultar la BD real para preservar datos manuales del cajero (mermas, fisico, etc)
+                                    const { data: realDbData } = await supabase
+                                        .from('inventory_daily')
+                                        .select('*')
+                                        .eq('sede_id', sedeId)
+                                        .eq('fecha', selectedDate);
+
                                     // 3. Preparar el lote de insert/upsert
                                     const batch = data.map(item => {
                                         const product = currentCatalog.find(p => p.nombre.toLowerCase() === item.articulo.toLowerCase());
                                         if (!product) return null;
 
+                                        const existingRow = (realDbData || []).find(r => r.product_id === product.id);
+
+                                        // Si es Loggro, preservamos inicial y entradas de la BD (Loggro solo trae salidas).
+                                        // Si es GamaSoft, usamos el inicial/entradas del archivo.
+                                        // Para ambos, SIEMPRE preservamos las mermas y el conteo fisico manual si ya existen en la BD.
+                                        const isLogro = !!item.isLogro;
+                                        
+                                        const finalInicial = isLogro ? (existingRow?.inicial !== undefined ? existingRow.inicial : item.inicial || 0) : (item.inicial || 0);
+                                        const finalEntradas = isLogro ? (existingRow?.entradas !== undefined ? existingRow.entradas : item.entradas || 0) : (item.entradas || 0);
+                                        const finalMermas = existingRow?.mermas !== undefined ? existingRow.mermas : item.mermas || 0;
+                                        const defaultTeorico = Number(finalInicial) + Number(finalEntradas) - Number(item.salidaVentas || 0) - Number(finalMermas);
+                                        const finalFisico = existingRow?.fisico !== undefined && existingRow?.fisico !== null ? existingRow.fisico : defaultTeorico;
+
                                         return {
                                             product_id: product.id,
                                             sede_id: sedeId,
                                             fecha: selectedDate,
-                                            inicial: item.inicial || 0,
-                                            entradas: item.entradas || 0,
+                                            inicial: finalInicial,
+                                            entradas: finalEntradas,
                                             salidas_ventas: item.salidaVentas || 0,
-                                            fisico: item.fisico || 0,
+                                            mermas: finalMermas,
+                                            fisico: finalFisico,
                                             costo_en_fecha: product.costoPorUnidad,
                                             reportar_plan_cero: true
                                         };

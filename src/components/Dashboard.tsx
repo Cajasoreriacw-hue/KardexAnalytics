@@ -236,8 +236,9 @@ export default function Dashboard() {
         return () => window.removeEventListener('hashchange', handleHashChange);
     }, []);
 
-    const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const [isLoading, setIsLoading] = useState(false);
+    const [isQualityModalOpen, setIsQualityModalOpen] = useState(false);
+    const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     // Siempre empezamos como false para evitar hydration mismatch (servidor vs cliente)
     // El auth listener lo pondrá en true cuando confirme que no hay sesión
     const [isAuthChecked, setIsAuthChecked] = useState(false);
@@ -486,6 +487,10 @@ export default function Dashboard() {
 
         return () => subscription.unsubscribe();
     }, []); // IMPORTANTE: Solo una vez, no depender de sessionUser
+
+    useEffect(() => {
+        (window as any).openQualityModal = () => setIsQualityModalOpen(true);
+    }, []);
 
     const fetchInventoryData = async () => {
         if (!sessionUser || sedes.length === 0) return;
@@ -1494,7 +1499,8 @@ export default function Dashboard() {
     }
 
     return (
-        <div id="dashboard-root" className="min-h-screen bg-slate-50 text-slate-700 font-sans selection:bg-cyan-500 selection:text-white relative flex flex-col lg:flex-row">
+        <>
+        <div id="app-root" className="min-h-screen bg-slate-50 text-slate-700 font-sans selection:bg-cyan-500 selection:text-white relative flex flex-col lg:flex-row">
 
             {/* Overlay para móvil */}
             {isMobileMenuOpen && (
@@ -2133,7 +2139,15 @@ export default function Dashboard() {
                                                     sede_id: sedeId,
                                                     fecha: selectedDate,
                                                     cantidad: entry.cantidad,
-                                                    costo_unitario: entry.costoPorUnidad
+                                                    costo_unitario: entry.costoPorUnidad,
+                                                    lote: entry.lote || null,
+                                                    fecha_vencimiento: entry.fechaVencimiento || null,
+                                                    temperatura_recepcion: entry.temperatura ? Number(entry.temperatura) : null,
+                                                    proveedor: entry.proveedor || null,
+                                                    rotulacion_ok: entry.rotulacion_ok ?? true,
+                                                    organoleptica_ok: entry.organoleptica_ok ?? true,
+                                                    transporte_ok: entry.transporte_ok ?? true,
+                                                    estado_calidad: entry.estado_calidad || 'APROBADO'
                                                 }]);
                                             
                                             if (logError) {
@@ -2187,7 +2201,7 @@ export default function Dashboard() {
                     )}
                     {view === "PURCHASES_HISTORY" && (
                         <div className="max-w-6xl mx-auto">
-                            <PurchasesHistoryPanel history={purchasesHistory} isLoading={isFetchingPurchases} inventoryData={inventoryData} />
+                            <PurchasesHistoryPanel history={purchasesHistory} isLoading={isFetchingPurchases} inventoryData={inventoryData} selectedDate={selectedDate} />
                         </div>
                     )}
                     {(view === "DASHBOARD" || view === "CORRECTIONS") && (
@@ -3082,7 +3096,6 @@ export default function Dashboard() {
                 </main>
             </div>
 
-            {/* Modales Globales */}
             {isConsumptionReportOpen && (
                 <FinancialReportModal
                     data={inventoryData.filter(item => activeSucursal === "Todas" || item.sucursal === activeSucursal)}
@@ -3093,6 +3106,9 @@ export default function Dashboard() {
                 />
             )}
         </div>
+        {/* MODAL DE CALIDAD (Portal-like para impresión limpia) */}
+        {isQualityModalOpen && <QualityReportModal history={purchasesHistory} defaultDate={selectedDate} onClose={() => setIsQualityModalOpen(false)} />}
+        </>
     );
 }
 
@@ -5472,6 +5488,14 @@ function LabelPrinterModal() {
 
 interface PurchaseEntry extends Product {
     cantidad: number;
+    lote?: string;
+    fechaVencimiento?: string;
+    temperatura?: string;
+    proveedor?: string;
+    rotulacion_ok?: boolean;
+    organoleptica_ok?: boolean;
+    transporte_ok?: boolean;
+    estado_calidad?: string;
 }
 
 function PurchasesPanel({ catalog, onSaveEntries }: { catalog: Product[], onSaveEntries: (entries: PurchaseEntry[]) => void }) {
@@ -5487,12 +5511,27 @@ function PurchasesPanel({ catalog, onSaveEntries }: { catalog: Product[], onSave
         if (existing) {
             setSelectedEntries(selectedEntries.map(e => e.id === product.id ? { ...e, cantidad: e.cantidad + 1 } : e));
         } else {
-            setSelectedEntries([...selectedEntries, { ...product, cantidad: 1 }]);
+            setSelectedEntries([...selectedEntries, { 
+                ...product, 
+                cantidad: 1, 
+                lote: '', 
+                fechaVencimiento: '', 
+                temperatura: '',
+                proveedor: '',
+                rotulacion_ok: true,
+                organoleptica_ok: true,
+                transporte_ok: true,
+                estado_calidad: 'APROBADO'
+            }]);
         }
     };
 
     const updateQuantity = (id: string, qty: number) => {
         setSelectedEntries(selectedEntries.map(e => e.id === id ? { ...e, cantidad: qty } : e));
+    };
+
+    const updateEntryField = (id: string, field: keyof PurchaseEntry, value: any) => {
+        setSelectedEntries(selectedEntries.map(e => e.id === id ? { ...e, [field]: value } : e));
     };
 
     const removeEntry = (id: string) => {
@@ -5557,24 +5596,70 @@ function PurchasesPanel({ catalog, onSaveEntries }: { catalog: Product[], onSave
                             </div>
                         ) : (
                             selectedEntries.map(entry => (
-                                <div key={entry.id} className="flex items-center gap-4 bg-slate-50 p-3 rounded-2xl border border-slate-100">
-                                    <div className="flex-1">
-                                        <p className="font-bold text-slate-800 text-sm leading-tight">{entry.nombre}</p>
-                                        <p className="text-[10px] text-slate-400 font-black uppercase">${entry.costoPorUnidad.toLocaleString()} / {entry.unidad}</p>
+                                <div key={entry.id} className="flex flex-col gap-3 bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                                    <div className="flex justify-between items-start gap-4">
+                                        <div className="flex-1">
+                                            <p className="font-bold text-slate-800 text-sm leading-tight">{entry.nombre}</p>
+                                            <p className="text-[10px] text-slate-400 font-black uppercase">${entry.costoPorUnidad.toLocaleString()} / {entry.unidad}</p>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <input
+                                                type="number"
+                                                className="w-20 bg-white border border-slate-200 rounded-xl py-2 text-center text-sm font-black focus:ring-2 focus:ring-emerald-500/20"
+                                                value={entry.cantidad}
+                                                onChange={(e) => updateQuantity(entry.id, Number(e.target.value))}
+                                            />
+                                            <button
+                                                onClick={() => removeEntry(entry.id)}
+                                                className="text-slate-300 hover:text-rose-500 transition-colors"
+                                            >
+                                                <Trash2 size={16} />
+                                            </button>
+                                        </div>
                                     </div>
-                                    <div className="flex items-center gap-2">
-                                        <input
-                                            type="number"
-                                            className="w-20 bg-white border border-slate-200 rounded-xl py-2 text-center text-sm font-black focus:ring-2 focus:ring-emerald-500/20"
-                                            value={entry.cantidad}
-                                            onChange={(e) => updateQuantity(entry.id, Number(e.target.value))}
-                                        />
-                                        <button
-                                            onClick={() => removeEntry(entry.id)}
-                                            className="text-slate-300 hover:text-rose-500 transition-colors"
+                                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 border-t border-slate-200 pt-3">
+                                        <div>
+                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest pl-1 mb-1 block">Lote</label>
+                                            <input type="text" placeholder="Ej: L-384" value={entry.lote || ''} onChange={(e) => updateEntryField(entry.id, 'lote', e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold focus:ring-2 focus:ring-emerald-500/20" />
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest pl-1 mb-1 block">Vencimiento</label>
+                                            <input type="date" value={entry.fechaVencimiento || ''} onChange={(e) => updateEntryField(entry.id, 'fechaVencimiento', e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold focus:ring-2 focus:ring-emerald-500/20" />
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest pl-1 mb-1 block">Temp Ingreso (°C)</label>
+                                            <input type="number" step="0.1" placeholder="Ej: 4.5" value={entry.temperatura || ''} onChange={(e) => updateEntryField(entry.id, 'temperatura', e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold focus:ring-2 focus:ring-emerald-500/20" />
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest pl-1 mb-1 block">Proveedor</label>
+                                            <input type="text" placeholder="Nombre Proveedor" value={entry.proveedor || ''} onChange={(e) => updateEntryField(entry.id, 'proveedor', e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold focus:ring-2 focus:ring-emerald-500/20" />
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 items-center mt-1">
+                                        <label className="flex items-center gap-2 cursor-pointer">
+                                            <input type="checkbox" checked={entry.rotulacion_ok} onChange={(e) => updateEntryField(entry.id, 'rotulacion_ok', e.target.checked)} className="size-4 accent-emerald-500" />
+                                            <span className="text-[10px] font-bold text-slate-500">Rotulación OK</span>
+                                        </label>
+                                        <label className="flex items-center gap-2 cursor-pointer">
+                                            <input type="checkbox" checked={entry.organoleptica_ok} onChange={(e) => updateEntryField(entry.id, 'organoleptica_ok', e.target.checked)} className="size-4 accent-emerald-500" />
+                                            <span className="text-[10px] font-bold text-slate-500">Organoléptica OK</span>
+                                        </label>
+                                        <label className="flex items-center gap-2 cursor-pointer">
+                                            <input type="checkbox" checked={entry.transporte_ok} onChange={(e) => updateEntryField(entry.id, 'transporte_ok', e.target.checked)} className="size-4 accent-emerald-500" />
+                                            <span className="text-[10px] font-bold text-slate-500">Transporte OK</span>
+                                        </label>
+                                        <select 
+                                            value={entry.estado_calidad} 
+                                            onChange={(e) => updateEntryField(entry.id, 'estado_calidad', e.target.value)}
+                                            className={cn(
+                                                "text-[10px] font-black rounded-lg px-2 py-1 outline-none",
+                                                entry.estado_calidad === 'APROBADO' ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
+                                            )}
                                         >
-                                            <Trash2 size={16} />
-                                        </button>
+                                            <option value="APROBADO">✔ APROBADO</option>
+                                            <option value="RECHAZADO">✖ RECHAZADO</option>
+                                        </select>
                                     </div>
                                 </div>
                             ))
@@ -5595,6 +5680,225 @@ function PurchasesPanel({ catalog, onSaveEntries }: { catalog: Product[], onSave
                         </button>
                     </div>
                 </div>
+            </div>
+        </div>
+    );
+}
+
+function QualityReportModal({ history, defaultDate, onClose }: { history: any[], defaultDate: string, onClose: () => void }) {
+    const today = new Date().toLocaleDateString('es-CO', { day: '2-digit', month: 'long', year: 'numeric' });
+    const [startDate, setStartDate] = useState(defaultDate);
+    const [endDate, setEndDate] = useState(defaultDate);
+    const [customLogo, setCustomLogo] = useState<string | null>(() => localStorage.getItem('quality_report_logo'));
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const filteredData = history.filter(h => {
+        if (!h.fecha) return false;
+        return h.fecha >= startDate && h.fecha <= endDate;
+    }).sort((a, b) => b.fecha.localeCompare(a.fecha));
+
+    const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                const base64String = reader.result as string;
+                setCustomLogo(base64String);
+                localStorage.setItem('quality_report_logo', base64String);
+            };
+            reader.readAsDataURL(file);
+        }
+    };
+    
+    return (
+        <div id="quality-report-modal-container" className="fixed inset-0 z-[150] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
+            <div className="max-w-[1200px] w-full my-8 animate-in zoom-in duration-300">
+                <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-4 no-print bg-white/10 p-4 rounded-3xl backdrop-blur-xl border border-white/20">
+                    <div className="flex flex-wrap items-center gap-4">
+                        <button
+                            onClick={() => fileInputRef.current?.click()}
+                            className="bg-white/10 hover:bg-white/20 text-white px-4 py-2 rounded-xl text-xs font-bold border border-white/20 transition-all flex items-center gap-2"
+                        >
+                            <Upload size={14} /> {customLogo ? 'CAMBIAR LOGO' : 'CARGAR LOGO'}
+                        </button>
+                        <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleLogoUpload} />
+                        
+                        <div className="h-8 w-px bg-white/20 mx-2" />
+                        
+                        <div className="flex items-center gap-2">
+                            <label className="text-[10px] font-black text-white/60 uppercase">Desde:</label>
+                            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="bg-white/10 border border-white/20 rounded-lg px-2 py-1 text-xs text-white outline-none" />
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <label className="text-[10px] font-black text-white/60 uppercase">Hasta:</label>
+                            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="bg-white/10 border border-white/20 rounded-lg px-2 py-1 text-xs text-white outline-none" />
+                        </div>
+
+                        {filteredData.length === 0 && (
+                            <span className="text-rose-200 text-xs font-black animate-pulse bg-rose-500/20 px-3 py-1 rounded-full border border-rose-500/40 uppercase">
+                                Sin datos en este rango
+                            </span>
+                        )}
+                    </div>
+                    <div className="flex gap-4">
+                        <button
+                            onClick={() => window.print()}
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-3 rounded-2xl font-black text-sm flex items-center gap-2 transition-all shadow-xl"
+                        >
+                            <Printer size={18} /> IMPRIMIR PDF
+                        </button>
+                        <button
+                            onClick={onClose}
+                            className="bg-white hover:bg-slate-50 text-slate-500 border border-slate-200 px-8 py-3 rounded-2xl font-black text-sm transition-all shadow-sm"
+                        >
+                            CERRAR
+                        </button>
+                    </div>
+                </div>
+
+                <div className="bg-white text-black p-8 shadow-2xl border border-slate-200 print:shadow-none print:border-none print:p-0 mx-auto" id="quality-report">
+                    {/* Estructura del Header igual a la imagen */}
+                    <table className="w-full border-collapse border-2 border-black mb-0">
+                        <tbody>
+                            <tr>
+                                <td colSpan={3} className="border-2 border-black py-1 px-2 text-center uppercase font-black text-lg">Control de Calidad de Procesos</td>
+                                <td rowSpan={3} className="border-2 border-black w-32 p-1 text-center">
+                                    <div className="flex flex-col items-center justify-center h-full gap-1">
+                                        {customLogo ? (
+                                            <img src={customLogo} alt="Logo" className="max-h-20 max-w-[100px] object-contain" />
+                                        ) : (
+                                            <>
+                                                <span className="font-black italic text-sm">CheeseWheel</span>
+                                                <div className="size-16 bg-slate-50 rounded-full flex items-center justify-center border-2 border-slate-200 border-dashed no-print">
+                                                    <span className="text-[8px] font-black text-slate-400">SIN LOGO</span>
+                                                </div>
+                                            </>
+                                        )}
+                                    </div>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td colSpan={3} className="border-2 border-black py-0 px-1 text-center font-bold text-md bg-slate-50">FORMATO DE RECEPCIÓN DE MATERIAS PRIMAS</td>
+                            </tr>
+                            <tr className="text-[9px] font-bold text-center uppercase">
+                                <td className="border-2 border-black p-1">VERSIÓN: 01<br/>FECHA DE EMISIÓN: ENERO 2026</td>
+                                <td className="border-2 border-black p-1">DESARROLLA: DEISY BERNAL<br/>INGENIERA DE ALIMENTOS</td>
+                                <td className="border-2 border-black p-1">APROBADO POR: GERENCIA GENERAL<br/>CÓDIGO: FC RM-01</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <table className="w-full border-collapse border-x-2 border-black text-[9px] font-bold text-center uppercase">
+                        <thead className="bg-slate-50 border-y-2 border-black">
+                            <tr>
+                                <th className="border border-black py-0.5 px-1 w-16">FECHA</th>
+                                <th className="border border-black py-0.5 px-1">PRODUCTO</th>
+                                <th className="border border-black py-0.5 px-1 w-12">CANT.</th>
+                                <th className="border border-black py-0.5 px-1">PROVEEDOR</th>
+                                <th className="border border-black py-0.5 px-1 w-16">ROTULACIÓN Y ETIQUETADO</th>
+                                <th className="border border-black py-0.5 px-1 w-16">PRUEBA ORGANOLEPTICA</th>
+                                <th className="border border-black py-0.5 px-1 w-16">T° C DE RECEPCIÓN</th>
+                                <th className="border border-black py-0.5 px-1 w-16">CONDICIONES TRANSPORTE</th>
+                                <th className="border border-black py-0.5 px-1">LOTE / FP</th>
+                                <th className="border border-black py-0.5 px-1">FECHA DE VENCIMIENTO</th>
+                                <th className="border border-black py-0.5 px-1 w-16">APROBADO / RECHAZADO</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {filteredData.length > 0 ? filteredData.map((reg, idx) => (
+                                <tr key={idx}>
+                                    <td className="border border-black py-0 px-1">{reg.fecha || '-'}</td>
+                                    <td className="border border-black py-0 px-1 text-left">{reg.products?.nombre || '-'}</td>
+                                    <td className="border border-black py-0 px-1">{reg.cantidad}</td>
+                                    <td className="border border-black py-0 px-1">{reg.proveedor || '-'}</td>
+                                    <td className="border border-black py-0 px-1">{reg.rotulacion_ok ? 'OK' : 'X'}</td>
+                                    <td className="border border-black py-0 px-1">{reg.organoleptica_ok ? 'OK' : 'X'}</td>
+                                    <td className="border border-black py-0 px-1">{reg.temperatura_recepcion !== null ? `${reg.temperatura_recepcion}°` : '-'}</td>
+                                    <td className="border border-black py-0 px-1">{reg.transporte_ok ? 'OK' : 'X'}</td>
+                                    <td className="border border-black py-0 px-1">{reg.lote || '-'}</td>
+                                    <td className="border border-black py-0 px-1">{reg.fecha_vencimiento || '-'}</td>
+                                    <td className="border border-black py-0 px-1 font-black">{reg.estado_calidad || 'APROBADO'}</td>
+                                </tr>
+                            )) : (
+                                Array.from({ length: 15 }).map((_, i) => (
+                                    <tr key={i} className="h-6">
+                                        <td className="border border-black py-0 px-1"></td>
+                                        <td className="border border-black py-0 px-1"></td>
+                                        <td className="border border-black py-0 px-1"></td>
+                                        <td className="border border-black py-0 px-1"></td>
+                                        <td className="border border-black py-0 px-1"></td>
+                                        <td className="border border-black py-0 px-1"></td>
+                                        <td className="border border-black py-0 px-1"></td>
+                                        <td className="border border-black py-0 px-1"></td>
+                                        <td className="border border-black py-0 px-1"></td>
+                                        <td className="border border-black py-0 px-1"></td>
+                                        <td className="border border-black py-0 px-1"></td>
+                                    </tr>
+                                ))
+                            )}
+                        </tbody>
+                    </table>
+
+                    <div className="border-x-2 border-b-2 border-black p-2 font-bold text-[9px] uppercase bg-slate-50">
+                        <p>OBSERVACIONES: ________________________________________________________________________________________________________________________________________________________</p>
+                    </div>
+
+                    <div className="grid grid-cols-2 border-x-2 border-b-2 border-black font-bold text-[9px] uppercase">
+                        <div className="p-2 border-r border-black h-12 flex flex-col justify-between">
+                            <span>OPERARIO ENCARGADO DE LA RECEPCIÓN:</span>
+                            <div className="h-px bg-black/20 w-full mb-1" />
+                        </div>
+                        <div className="p-2 flex flex-col justify-between">
+                            <span>VERIFICADO:</span>
+                            <div className="h-px bg-black/20 w-full mb-1" />
+                        </div>
+                    </div>
+                    
+                    <div className="border-x-2 border-b-2 border-black p-1 font-black text-[8px] uppercase flex justify-between bg-white text-slate-400">
+                        <span>CONFORME = 1   NO CONFORME = 0</span>
+                        <span>FORMATO OFICIAL CHEESEWHEEL - {today}</span>
+                    </div>
+                </div>
+
+                <style>{`
+                    @media print {
+                        @page { 
+                            margin: 1cm; 
+                            size: landscape; 
+                        }
+                        
+                        /* OCULTAR TODA LA APP */
+                        #app-root {
+                            display: none !important;
+                        }
+
+                        /* MOSTRAR SOLO EL CONTENEDOR DEL MODAL */
+                        #quality-report-modal-container {
+                            display: block !important;
+                            position: static !important;
+                            background: white !important;
+                            width: 100% !important;
+                            height: auto !important;
+                            visibility: visible !important;
+                        }
+
+                        #quality-report-modal-container * {
+                            visibility: visible !important;
+                        }
+
+                        #quality-report {
+                            width: 100% !important;
+                            border: 2px solid black !important;
+                            box-shadow: none !important;
+                            margin: 0 !important;
+                            visibility: visible !important;
+                        }
+
+                        .no-print {
+                            display: none !important;
+                        }
+                    }
+                `}</style>
             </div>
         </div>
     );
@@ -6335,7 +6639,7 @@ function WasteHistoryPanel({ history, isLoading }: { history: any[], isLoading: 
     );
 }
 
-function PurchasesHistoryPanel({ history, isLoading, inventoryData = [] }: { history: any[], isLoading: boolean, inventoryData?: any[] }) {
+function PurchasesHistoryPanel({ history, isLoading, inventoryData = [], selectedDate }: { history: any[], isLoading: boolean, inventoryData?: any[], selectedDate: string }) {
     if (isLoading) {
         return (
             <div className="py-20 flex flex-col items-center justify-center gap-4 bg-white border border-slate-200 rounded-[2.5rem] shadow-sm">
@@ -6372,6 +6676,27 @@ function PurchasesHistoryPanel({ history, isLoading, inventoryData = [] }: { his
 
     const fullHistory = [...history, ...legacyEntries].sort((a: any, b: any) => new Date(b.created_at || b.fecha).getTime() - new Date(a.created_at || a.fecha).getTime());
 
+    const exportTraceabilityToExcel = () => {
+        const dataToExport = history.map(reg => ({
+            "Fecha Ingreso": (() => {
+                if (!reg.fecha) return "-";
+                return reg.fecha;
+            })(),
+            "Sucursal": reg.sedes?.nombre || 'Desconocida',
+            "Materia Prima": reg.products?.nombre || '-',
+            "Cantidad": reg.cantidad,
+            "Costo Unitario": reg.costo_unitario,
+            "Lote": reg.lote || 'N/A',
+            "Fecha Vencimiento": reg.fecha_vencimiento || 'N/A',
+            "Temp. Recepción (°C)": reg.temperatura_recepcion !== null && reg.temperatura_recepcion !== undefined ? reg.temperatura_recepcion : 'N/A'
+        }));
+
+        const ws = XLSX.utils.json_to_sheet(dataToExport);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Trazabilidad MP");
+        XLSX.writeFile(wb, `Trazabilidad_MP_${new Date().toISOString().split('T')[0]}.xlsx`);
+    };
+
     return (
         <div className="space-y-6 animate-in fade-in duration-500">
             <div className="bg-white border border-slate-200 rounded-[2.5rem] p-10 shadow-sm flex flex-col md:flex-row justify-between items-center gap-6">
@@ -6380,6 +6705,18 @@ function PurchasesHistoryPanel({ history, isLoading, inventoryData = [] }: { his
                     <p className="text-slate-500 font-bold mt-1 uppercase text-[10px] tracking-widest">Seguimiento de compras y reaprovechamientos</p>
                 </div>
                 <div className="flex gap-4">
+                    <button
+                        onClick={() => (window as any).openQualityModal()}
+                        className="bg-slate-900 hover:bg-slate-800 text-white px-6 py-3 rounded-2xl text-sm font-black transition-all flex items-center justify-center gap-2 shadow-lg shadow-slate-900/10 h-auto self-stretch"
+                    >
+                        <Printer size={18} /> FORMATO CALIDAD (PDF)
+                    </button>
+                    <button
+                        onClick={exportTraceabilityToExcel}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-3 rounded-2xl text-sm font-black transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 h-auto self-stretch"
+                    >
+                        <FileSpreadsheet size={18} /> EXPORTAR EXCEL
+                    </button>
                     <div className="bg-emerald-50 border border-emerald-100 px-6 py-3 rounded-2xl text-center shadow-sm">
                         <p className="text-[10px] font-black text-emerald-400 uppercase">Total Documentado</p>
                         <p className="text-2xl font-black text-emerald-600">{history.length}</p>
@@ -6403,6 +6740,7 @@ function PurchasesHistoryPanel({ history, isLoading, inventoryData = [] }: { his
                                 <th className="px-8 py-5 font-black text-slate-400 uppercase text-[10px] tracking-widest">Sede</th>
                                 <th className="px-8 py-5 font-black text-slate-400 uppercase text-[10px] tracking-widest text-right">Cantidad</th>
                                 <th className="px-8 py-5 font-black text-slate-400 uppercase text-[10px] tracking-widest">Costo Unit.</th>
+                                <th className="px-8 py-5 font-black text-slate-400 uppercase text-[10px] tracking-widest text-center">Trazabilidad</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-50">
@@ -6442,11 +6780,21 @@ function PurchasesHistoryPanel({ history, isLoading, inventoryData = [] }: { his
                                     <td className="px-8 py-5">
                                         <span className="font-bold text-slate-600">${Number(reg.costo_unitario).toLocaleString()}</span>
                                     </td>
+                                    <td className="px-8 py-5">
+                                        {(reg.lote || reg.fecha_vencimiento || reg.temperatura_recepcion) ? (
+                                            <div className="flex flex-col items-center">
+                                                <span className="text-[10px] font-black text-slate-700 uppercase bg-slate-100 px-2 py-0.5 rounded">Lote: {reg.lote || '-'}</span>
+                                                <span className="text-[10px] font-bold text-slate-500 mt-1">{reg.fecha_vencimiento ? `Vence: ${reg.fecha_vencimiento}` : ''}</span>
+                                            </div>
+                                        ) : (
+                                            <span className="text-[10px] text-slate-300 font-bold text-center block">N/A</span>
+                                        )}
+                                    </td>
                                 </tr>
                             ))}
                             {fullHistory.length === 0 && (
                                 <tr>
-                                    <td colSpan={5} className="py-24 text-center">
+                                    <td colSpan={6} className="py-24 text-center">
                                         <div className="flex flex-col items-center gap-4 opacity-30">
                                             <div className="size-20 rounded-full bg-slate-100 flex items-center justify-center">
                                                 <Plus size={40} className="text-slate-400" />
